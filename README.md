@@ -85,11 +85,16 @@ Each teammate sets `STAGING_MYSQL_MCP_TOKEN` in their shell profile.
 ```json
 {
   "columns": ["id", "name", "phone"],
-  "rows": [[1, "Andi", "0812..."], [2, "Budi", null]],
+  "rows": [{"id": 1, "name": "Andi", "phone": "0812..."}, {"id": 2, "name": "Budi", "phone": null}],
   "truncated": false
 }
 ```
 
-Column names appear once; rows are arrays. `NULL` is JSON `null`. Binary
-cells become `"<binary, N bytes>"`. `DECIMAL` values stay strings to keep
-precision. MySQL errors pass through verbatim so agents can self-correct.
+Rows are objects keyed by the column label as written in the query (aliases
+respected). Duplicate labels — `SELECT u.id, b.id` on a join — are qualified
+with the table alias (`u.id`, `b.id`); if there is no table to qualify by,
+they get a numeric suffix (`x`, `x_2`). `columns` lists the same keys once in
+SELECT order, since JSON object keys serialize alphabetically. `NULL` is JSON
+`null`. Binary cells become `"<binary, N bytes>"`. `DECIMAL` values stay
+strings to keep precision. MySQL errors pass through verbatim so agents can
+self-correct.

@@ -20,10 +20,12 @@ const dialTimeout = 5 * time.Second
 var errTruncated = errors.New("result truncated")
 
 type QueryResult struct {
-	Columns   []string `json:"columns"`
-	Rows      [][]any  `json:"rows"`
-	Truncated bool     `json:"truncated"`
-	Note      string   `json:"note,omitempty"`
+	// Columns preserves SELECT order; the row objects can't, because JSON
+	// object keys serialize alphabetically.
+	Columns   []string         `json:"columns"`
+	Rows      []map[string]any `json:"rows"`
+	Truncated bool             `json:"truncated"`
+	Note      string           `json:"note,omitempty"`
 }
 
 type Pool struct {
@@ -173,18 +175,19 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		}
 	}()
 
-	res := &QueryResult{Columns: []string{}, Rows: [][]any{}}
+	res := &QueryResult{Columns: []string{}, Rows: []map[string]any{}}
 	bytesSoFar := 0
 	var fields []*mysql.Field
 	var streamResult mysql.Result
 
 	err = conn.ExecuteSelectStreaming(sql, &streamResult,
 		func(row []mysql.FieldValue) error {
-			vals := make([]any, len(row))
+			vals := make(map[string]any, len(row))
 			for i := range row {
 				v, size := fieldValueToJSON(&row[i], fieldAt(fields, i))
-				vals[i] = v
-				bytesSoFar += size
+				key := labelAt(res.Columns, i)
+				vals[key] = v
+				bytesSoFar += size + len(key) + 4 // the key is repeated per row
 			}
 			res.Rows = append(res.Rows, vals)
 			if bytesSoFar >= p.cfg.Limits.MaxResponseBytes {
@@ -194,9 +197,7 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		},
 		func(result *mysql.Result) error {
 			fields = result.Fields
-			for _, f := range fields {
-				res.Columns = append(res.Columns, string(f.Name))
-			}
+			res.Columns = columnLabels(fields)
 			return nil
 		})
 	close(done)
@@ -233,6 +234,52 @@ func fieldAt(fields []*mysql.Field, i int) *mysql.Field {
 		return fields[i]
 	}
 	return nil
+}
+
+func labelAt(labels []string, i int) string {
+	if i < len(labels) {
+		return labels[i]
+	}
+	return fmt.Sprintf("column_%d", i+1)
+}
+
+// columnLabels turns resultset metadata into unique row-object keys. The base
+// label is the column name exactly as written in the query (aliases
+// respected). Duplicates are qualified with the table alias from the query
+// (u.id, b.id); anything still colliding gets a numeric suffix.
+func columnLabels(fields []*mysql.Field) []string {
+	labels := make([]string, len(fields))
+	counts := make(map[string]int, len(fields))
+	for i, f := range fields {
+		labels[i] = string(f.Name)
+		counts[labels[i]]++
+	}
+	for i, f := range fields {
+		if counts[labels[i]] > 1 && len(f.Table) > 0 {
+			labels[i] = string(f.Table) + "." + labels[i]
+		}
+	}
+	// First occurrence of each label keeps its name; later ones get bumped to
+	// a free suffix. Reserving all first occurrences up front stops a bumped
+	// duplicate from stealing the name of a genuine column further right.
+	used := make(map[string]bool, len(labels))
+	dup := make([]bool, len(labels))
+	for i, l := range labels {
+		dup[i] = used[l]
+		used[l] = true
+	}
+	for i, l := range labels {
+		if !dup[i] {
+			continue
+		}
+		final := l
+		for n := 2; used[final]; n++ {
+			final = fmt.Sprintf("%s_%d", l, n)
+		}
+		used[final] = true
+		labels[i] = final
+	}
+	return labels
 }
 
 // Column types that hold real binary payloads when the charset is binary(63).

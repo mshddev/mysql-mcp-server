@@ -234,6 +234,72 @@ func TestFieldAt(t *testing.T) {
 	}
 }
 
+func TestColumnLabels(t *testing.T) {
+	field := func(name, table string) *mysql.Field {
+		return &mysql.Field{Name: []byte(name), Table: []byte(table)}
+	}
+
+	tests := []struct {
+		name   string
+		fields []*mysql.Field
+		want   []string
+	}{
+		{name: "nil fields", fields: nil, want: []string{}},
+		{
+			name:   "unique names stay bare",
+			fields: []*mysql.Field{field("id", "u"), field("name", "u")},
+			want:   []string{"id", "name"},
+		},
+		{
+			name:   "join duplicates get table-qualified",
+			fields: []*mysql.Field{field("id", "u"), field("id", "b"), field("name", "u")},
+			want:   []string{"u.id", "b.id", "name"},
+		},
+		{
+			name:   "duplicates without a table get suffixed",
+			fields: []*mysql.Field{field("x", ""), field("x", ""), field("x", "")},
+			want:   []string{"x", "x_2", "x_3"},
+		},
+		{
+			// Suffixing "x" to "x_2" must not collide with a real "x_2" column.
+			name:   "suffix collides with an existing label",
+			fields: []*mysql.Field{field("x", ""), field("x", ""), field("x_2", "")},
+			want:   []string{"x", "x_3", "x_2"},
+		},
+		{
+			// Same table selected twice without distinct aliases: qualifying
+			// does not help, so the suffix pass must resolve it.
+			name:   "qualified labels still colliding",
+			fields: []*mysql.Field{field("id", "u"), field("id", "u")},
+			want:   []string{"u.id", "u.id_2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := columnLabels(tt.fields)
+			if len(got) != len(tt.want) {
+				t.Fatalf("columnLabels() = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("label %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLabelAt(t *testing.T) {
+	labels := []string{"id", "name"}
+	if got := labelAt(labels, 1); got != "name" {
+		t.Errorf("labelAt(1) = %q, want %q", got, "name")
+	}
+	// Out of range must yield a stable placeholder rather than panic.
+	if got := labelAt(labels, 2); got != "column_3" {
+		t.Errorf("labelAt(2) = %q, want %q", got, "column_3")
+	}
+}
+
 func TestNewPoolSizesChannels(t *testing.T) {
 	cfg := &Config{}
 	cfg.Database.Host = "db.internal"
@@ -361,11 +427,11 @@ func asNumber(t *testing.T, v any) float64 {
 
 func connectionID(t *testing.T, p *Pool) float64 {
 	t.Helper()
-	res := mustQuery(t, p, "SELECT CONNECTION_ID()")
+	res := mustQuery(t, p, "SELECT CONNECTION_ID() AS id")
 	if len(res.Rows) != 1 || len(res.Rows[0]) != 1 {
 		t.Fatalf("CONNECTION_ID() returned %v, want one row of one column", res.Rows)
 	}
-	return asNumber(t, res.Rows[0][0])
+	return asNumber(t, res.Rows[0]["id"])
 }
 
 func TestQueryBasicResult(t *testing.T) {
@@ -390,35 +456,36 @@ func TestQueryBasicResult(t *testing.T) {
 	}
 
 	first := res.Rows[0]
-	if got := asNumber(t, first[0]); got != 1 {
+	if got := asNumber(t, first["id"]); got != 1 {
 		t.Errorf("id = %v, want 1", got)
 	}
-	if first[1] != "Andi Wijaya" {
-		t.Errorf("name = %#v, want %q", first[1], "Andi Wijaya")
+	if first["name"] != "Andi Wijaya" {
+		t.Errorf("name = %#v, want %q", first["name"], "Andi Wijaya")
 	}
-	if first[2] != "andi@example.com" {
-		t.Errorf("email = %#v, want %q", first[2], "andi@example.com")
+	if first["email"] != "andi@example.com" {
+		t.Errorf("email = %#v, want %q", first["email"], "andi@example.com")
 	}
 	// The seeded avatar is a 6-byte BLOB and must be masked, not returned raw.
-	if first[4] != "<binary, 6 bytes>" {
-		t.Errorf("avatar = %#v, want %q", first[4], "<binary, 6 bytes>")
+	if first["avatar"] != "<binary, 6 bytes>" {
+		t.Errorf("avatar = %#v, want %q", first["avatar"], "<binary, 6 bytes>")
 	}
 	// Regression: DATETIME also reports the binary charset but is readable text.
-	created, ok := first[5].(string)
+	created, ok := first["created_at"].(string)
 	if !ok || !strings.Contains(created, "-") {
-		t.Errorf("created_at = %#v, want a readable timestamp string", first[5])
+		t.Errorf("created_at = %#v, want a readable timestamp string", first["created_at"])
 	}
 
-	// NULLs come through as nil, in text and binary columns alike.
+	// NULLs come through as nil, in text and binary columns alike. A key must
+	// still be present for a NULL cell, not omitted.
 	second := res.Rows[1]
-	if second[3] != nil {
-		t.Errorf("phone of row 2 = %#v, want nil", second[3])
+	if v, present := second["phone"]; !present || v != nil {
+		t.Errorf("phone of row 2 = %#v (present %v), want an explicit nil", v, present)
 	}
-	if second[4] != nil {
-		t.Errorf("avatar of row 2 = %#v, want nil", second[4])
+	if v, present := second["avatar"]; !present || v != nil {
+		t.Errorf("avatar of row 2 = %#v (present %v), want an explicit nil", v, present)
 	}
-	if res.Rows[2][2] != nil {
-		t.Errorf("email of row 3 = %#v, want nil", res.Rows[2][2])
+	if res.Rows[2]["email"] != nil {
+		t.Errorf("email of row 3 = %#v, want nil", res.Rows[2]["email"])
 	}
 }
 
@@ -427,26 +494,59 @@ func TestQueryValueShapes(t *testing.T) {
 
 	res := mustQuery(t, p, "SELECT price FROM bookings ORDER BY id LIMIT 1")
 	// DECIMAL is a binary-charset column that must stay readable.
-	if price, ok := res.Rows[0][0].(string); !ok || price != "1500000.00" {
-		t.Errorf("price = %#v, want the string %q", res.Rows[0][0], "1500000.00")
+	if price, ok := res.Rows[0]["price"].(string); !ok || price != "1500000.00" {
+		t.Errorf("price = %#v, want the string %q", res.Rows[0]["price"], "1500000.00")
 	}
 
-	res = mustQuery(t, p, "SELECT 7, -7, CAST(3.5 AS DOUBLE), 'text', NULL")
+	res = mustQuery(t, p,
+		"SELECT 7 AS pos, -7 AS neg, CAST(3.5 AS DOUBLE) AS dbl, 'text' AS str, NULL AS missing")
 	row := res.Rows[0]
-	if row[0] != int64(7) {
-		t.Errorf("literal 7 = %#v (%T), want int64(7)", row[0], row[0])
+	if row["pos"] != int64(7) {
+		t.Errorf("literal 7 = %#v (%T), want int64(7)", row["pos"], row["pos"])
 	}
-	if row[1] != int64(-7) {
-		t.Errorf("literal -7 = %#v (%T), want int64(-7)", row[1], row[1])
+	if row["neg"] != int64(-7) {
+		t.Errorf("literal -7 = %#v (%T), want int64(-7)", row["neg"], row["neg"])
 	}
-	if row[2] != 3.5 {
-		t.Errorf("double = %#v (%T), want float64(3.5)", row[2], row[2])
+	if row["dbl"] != 3.5 {
+		t.Errorf("double = %#v (%T), want float64(3.5)", row["dbl"], row["dbl"])
 	}
-	if row[3] != "text" {
-		t.Errorf("string = %#v, want %q", row[3], "text")
+	if row["str"] != "text" {
+		t.Errorf("string = %#v, want %q", row["str"], "text")
 	}
-	if row[4] != nil {
-		t.Errorf("NULL = %#v, want nil", row[4])
+	if row["missing"] != nil {
+		t.Errorf("NULL = %#v, want nil", row["missing"])
+	}
+}
+
+func TestQueryDuplicateColumnNames(t *testing.T) {
+	p := newTestPool(t, nil)
+
+	// A join with two id columns: without disambiguation one would silently
+	// overwrite the other in the row object.
+	res := mustQuery(t, p,
+		"SELECT u.id, b.id FROM users u JOIN bookings b ON b.user_id = u.id ORDER BY b.id LIMIT 1")
+	want := []string{"u.id", "b.id"}
+	for i, w := range want {
+		if res.Columns[i] != w {
+			t.Errorf("column %d = %q, want %q", i, res.Columns[i], w)
+		}
+	}
+	row := res.Rows[0]
+	if len(row) != 2 {
+		t.Fatalf("row has %d keys (%v), want both id columns", len(row), row)
+	}
+	if _, ok := row["u.id"]; !ok {
+		t.Errorf("row = %v, want a %q key", row, "u.id")
+	}
+	if _, ok := row["b.id"]; !ok {
+		t.Errorf("row = %v, want a %q key", row, "b.id")
+	}
+
+	// Duplicate aliases with no table to qualify by fall back to suffixes.
+	res = mustQuery(t, p, "SELECT 1 AS x, 2 AS x")
+	row = res.Rows[0]
+	if asNumber(t, row["x"]) != 1 || asNumber(t, row["x_2"]) != 2 {
+		t.Errorf("row = %v, want x=1 and x_2=2", row)
 	}
 }
 
@@ -512,8 +612,8 @@ func TestQueryTruncation(t *testing.T) {
 	}
 
 	// The pool still works afterwards.
-	if res := mustQuery(t, p, "SELECT COUNT(*) FROM users"); asNumber(t, res.Rows[0][0]) != 3 {
-		t.Errorf("follow-up query returned %v, want 3", res.Rows[0][0])
+	if res := mustQuery(t, p, "SELECT COUNT(*) AS n FROM users"); asNumber(t, res.Rows[0]["n"]) != 3 {
+		t.Errorf("follow-up query returned %v, want 3", res.Rows[0]["n"])
 	}
 }
 
@@ -532,10 +632,10 @@ func TestSessionStateIsolation(t *testing.T) {
 		if len(res.Rows) != 1 {
 			t.Fatalf("%s: got %d rows, want 1", when, len(res.Rows))
 		}
-		if ro := asNumber(t, res.Rows[0][0]); ro != 1 {
+		if ro := asNumber(t, res.Rows[0]["ro"]); ro != 1 {
 			t.Errorf("%s: tx_read_only = %v, want 1", when, ro)
 		}
-		if mst := asNumber(t, res.Rows[0][1]); mst != timeout {
+		if mst := asNumber(t, res.Rows[0]["mst"]); mst != timeout {
 			t.Errorf("%s: max_statement_time = %v, want %d", when, mst, timeout)
 		}
 	}
@@ -613,8 +713,8 @@ func TestQueryTimeoutKills(t *testing.T) {
 	// client. mcp_readonly only sees its own threads, which is enough here.
 	time.Sleep(200 * time.Millisecond)
 	res = mustQuery(t, p,
-		"SELECT COUNT(*) FROM information_schema.processlist WHERE command = 'Query' AND time > 0")
-	if orphans := asNumber(t, res.Rows[0][0]); orphans != 0 {
+		"SELECT COUNT(*) AS n FROM information_schema.processlist WHERE command = 'Query' AND time > 0")
+	if orphans := asNumber(t, res.Rows[0]["n"]); orphans != 0 {
 		t.Errorf("%v query(ies) still running after the kill, want 0", orphans)
 	}
 
@@ -717,8 +817,8 @@ func TestQueryRejectsWrites(t *testing.T) {
 	}
 
 	// The connection was dropped, but the pool keeps serving reads.
-	if res := mustQuery(t, p, "SELECT COUNT(*) FROM users"); asNumber(t, res.Rows[0][0]) != 3 {
-		t.Errorf("users count = %v, want 3", res.Rows[0][0])
+	if res := mustQuery(t, p, "SELECT COUNT(*) AS n FROM users"); asNumber(t, res.Rows[0]["n"]) != 3 {
+		t.Errorf("users count = %v, want 3", res.Rows[0]["n"])
 	}
 }
 
