@@ -26,35 +26,42 @@ type Config struct {
 	} `yaml:"limits"`
 }
 
-// LoadConfig reads the YAML file, expands ${VAR} placeholders from the
-// environment, and fails fast if a referenced variable is unset.
+// LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
+// environment. Expansion happens after parsing so secret values containing
+// YAML-significant characters (#, :, quotes) can't corrupt the document.
 func LoadConfig(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	var missing []string
-	expanded := os.Expand(string(raw), func(key string) string {
-		val, ok := os.LookupEnv(key)
-		if !ok {
-			missing = append(missing, key)
-		}
-		return val
-	})
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("config references unset environment variables: %v", missing)
-	}
-
 	cfg := &Config{}
-	cfg.Server.Listen = ":3000"
+	cfg.Server.Listen = "127.0.0.1:3000"
 	cfg.Database.Port = 3306
 	cfg.Limits.TimeoutSeconds = 30
 	cfg.Limits.MaxResponseBytes = 500 << 10
 	cfg.Limits.MaxConnections = 10
 
-	if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
+	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	var missing []string
+	for _, f := range []*string{
+		&cfg.Server.Listen, &cfg.Server.AuthToken,
+		&cfg.Database.Host, &cfg.Database.User,
+		&cfg.Database.Password, &cfg.Database.Database,
+	} {
+		*f = os.Expand(*f, func(key string) string {
+			val, ok := os.LookupEnv(key)
+			if !ok {
+				missing = append(missing, key)
+			}
+			return val
+		})
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("config references unset environment variables: %v", missing)
 	}
 
 	if cfg.Server.AuthToken == "" {
@@ -62,6 +69,10 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Database.Host == "" || cfg.Database.User == "" || cfg.Database.Database == "" {
 		return nil, fmt.Errorf("database.host, database.user and database.database are required")
+	}
+	if cfg.Limits.TimeoutSeconds < 1 || cfg.Limits.MaxConnections < 1 || cfg.Limits.MaxResponseBytes < 1 {
+		return nil, fmt.Errorf("limits must all be at least 1 (timeout_seconds=%d, max_connections=%d, max_response_bytes=%d)",
+			cfg.Limits.TimeoutSeconds, cfg.Limits.MaxConnections, cfg.Limits.MaxResponseBytes)
 	}
 	return cfg, nil
 }

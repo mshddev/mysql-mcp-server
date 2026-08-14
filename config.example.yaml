@@ -2,7 +2,8 @@
 # The two secrets come from the environment via ${VAR} placeholders.
 # These defaults point at a local dev database seeded via seed/seed.sql.
 server:
-  listen: ":3000"
+  # Loopback by default; use ":3000" to expose on all interfaces (e.g. team VM).
+  listen: "127.0.0.1:3000"
   auth_token: ${MCP_AUTH_TOKEN}
 
 database:

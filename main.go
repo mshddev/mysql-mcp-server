@@ -79,15 +79,27 @@ func main() {
 
 	logger.Info("startup", "listen", cfg.Server.Listen, "database",
 		cfg.Database.Host, "version", version)
-	err = http.ListenAndServe(cfg.Server.Listen, bearerAuth(cfg.Server.AuthToken, handler))
+	srv := &http.Server{
+		Addr:              cfg.Server.Listen,
+		Handler:           bearerAuth(cfg.Server.AuthToken, handler),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Must outlive the query timeout or responses get cut off mid-write.
+		WriteTimeout: time.Duration(cfg.Limits.TimeoutSeconds)*time.Second + 30*time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	err = srv.ListenAndServe()
 	logger.Error("shutdown", "error", err.Error())
 	os.Exit(1)
 }
 
 func bearerAuth(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		// The auth scheme name is case-insensitive per RFC 7235.
+		h := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
+			subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

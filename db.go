@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -42,9 +43,21 @@ func NewPool(cfg *Config) *Pool {
 	}
 }
 
+// socketDeadlines bounds every read/write so a wedged server or half-dead
+// network can never block a pool slot forever. The deadline resets per packet,
+// so it acts as an idle timeout and must stay above the query timeout.
+func (p *Pool) socketDeadlines(d time.Duration) client.Option {
+	return func(c *client.Conn) error {
+		c.ReadTimeout = d
+		c.WriteTimeout = d
+		return nil
+	}
+}
+
 func (p *Pool) dial(ctx context.Context) (*client.Conn, error) {
+	d := time.Duration(p.cfg.Limits.TimeoutSeconds)*time.Second + 10*time.Second
 	conn, err := client.ConnectWithTimeout(p.addr, p.cfg.Database.User,
-		p.cfg.Database.Password, p.cfg.Database.Database, dialTimeout)
+		p.cfg.Database.Password, p.cfg.Database.Database, dialTimeout, p.socketDeadlines(d))
 	if err != nil {
 		return nil, err
 	}
@@ -119,12 +132,15 @@ func (p *Pool) release(conn *client.Conn, broken bool) {
 // on the server.
 func (p *Pool) killQuery(connID uint32) {
 	killer, err := client.ConnectWithTimeout(p.addr, p.cfg.Database.User,
-		p.cfg.Database.Password, "", dialTimeout)
+		p.cfg.Database.Password, "", dialTimeout, p.socketDeadlines(dialTimeout))
 	if err != nil {
+		slog.Warn("kill_query", "conn_id", connID, "error", err.Error())
 		return
 	}
 	defer killer.Close()
-	killer.Execute(fmt.Sprintf("KILL QUERY %d", connID))
+	if _, err := killer.Execute(fmt.Sprintf("KILL QUERY %d", connID)); err != nil {
+		slog.Warn("kill_query", "conn_id", connID, "error", err.Error())
+	}
 }
 
 // Query runs one statement and streams the resultset, truncating at the row
@@ -182,9 +198,12 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 
 	switch {
 	case err == nil:
-		// If a kill fired anyway (deadline lost the race to completion), the
-		// connection may still receive it — discard rather than reuse.
-		p.release(conn, killed.Load())
+		// A statement answered with an OK packet instead of a resultset (SET,
+		// USE, DO, ...) may have changed session state — read-only mode, the
+		// statement timeout, the default schema — so it must never be handed
+		// to the next caller. Also discard if a kill fired after completion
+		// (deadline lost the race), since the KILL may still land.
+		p.release(conn, killed.Load() || fields == nil)
 	case errors.Is(err, errTruncated):
 		// Mid-stream abort leaves unread packets; drop the connection.
 		p.release(conn, true)
@@ -192,7 +211,10 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		res.Note = fmt.Sprintf("truncated at ~%d bytes — narrow the query (add WHERE or LIMIT)", bytesSoFar)
 	case killed.Load():
 		p.release(conn, true)
-		return nil, fmt.Errorf("query exceeded the %ds timeout and was killed", p.cfg.Limits.TimeoutSeconds)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("query exceeded the %ds timeout and was killed", p.cfg.Limits.TimeoutSeconds)
+		}
+		return nil, errors.New("query canceled by the caller and killed")
 	default:
 		p.release(conn, true)
 		return nil, err
@@ -243,6 +265,7 @@ func fieldValueToJSON(fv *mysql.FieldValue, f *mysql.Field) (any, int) {
 		}
 		return string(b), len(b) + 2
 	default:
-		return fv.String(), len(fv.String())
+		s := fv.String()
+		return s, len(s)
 	}
 }
