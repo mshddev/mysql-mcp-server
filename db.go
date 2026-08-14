@@ -56,7 +56,9 @@ func (p *Pool) socketDeadlines(d time.Duration) client.Option {
 
 func (p *Pool) dial(ctx context.Context) (*client.Conn, error) {
 	d := time.Duration(p.cfg.Limits.TimeoutSeconds)*time.Second + 10*time.Second
-	conn, err := client.ConnectWithTimeout(p.addr, p.cfg.Database.User,
+	// ConnectWithTimeout ignores its timeout argument (go-mysql v1.16.0
+	// hardcodes 10s); the context form is the one that actually bounds a dial.
+	conn, err := client.ConnectWithContext(ctx, p.addr, p.cfg.Database.User,
 		p.cfg.Database.Password, p.cfg.Database.Database, dialTimeout, p.socketDeadlines(d))
 	if err != nil {
 		return nil, err
@@ -131,7 +133,11 @@ func (p *Pool) release(conn *client.Conn, broken bool) {
 // connection; abandoning the client side alone would leave the query running
 // on the server.
 func (p *Pool) killQuery(connID uint32) {
-	killer, err := client.ConnectWithTimeout(p.addr, p.cfg.Database.User,
+	// Fresh context on purpose: the query ctx that triggered the kill is
+	// already cancelled and would abort the dial immediately.
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	killer, err := client.ConnectWithContext(ctx, p.addr, p.cfg.Database.User,
 		p.cfg.Database.Password, "", dialTimeout, p.socketDeadlines(dialTimeout))
 	if err != nil {
 		slog.Warn("kill_query", "conn_id", connID, "error", err.Error())
