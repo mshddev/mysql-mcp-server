@@ -12,14 +12,6 @@ SQL over streamable HTTP (MCP spec 2026-07-28, stateless) and returns rows.
   session state (`SET`, `USE`, ... — anything answered without a resultset)
   gets its connection discarded instead of pooled, so one caller can't
   weaken the fences for the next.
-- **Known gap — named locks**: `GET_LOCK()` is a write-shaped side effect
-  that slips past both fences — it isn't a table write (so the read-only
-  session allows it) and it returns a resultset (so its connection is
-  pooled, holding the lock until that connection is eventually recycled).
-  "Read-only" is not literal for this one case. It's left open on purpose:
-  closing it cleanly would cost a `RELEASE_ALL_LOCKS()` round-trip on every
-  query, too high a tax on the fast-read common path to prevent something
-  that needs the token, a guessed lock name, and bad timing to matter.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens of result
   text): rows stream in and streaming stops once the cap is hit; the response
   says so, with a hint to narrow the query. Note the raw HTTP response is
