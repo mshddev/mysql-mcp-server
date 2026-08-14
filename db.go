@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,13 @@ import (
 )
 
 const dialTimeout = 5 * time.Second
+
+// maxSafeInteger is the largest integer a float64 represents exactly. The MCP
+// SDK round-trips structured output through a float64 (applySchema unmarshals
+// into `any`, then re-marshals), so any integer past this would come off the
+// wire silently corrupted — 9223372036854775807 arrives as 9223372036854776000.
+// Integers beyond it are emitted as strings instead, the same way DECIMAL is.
+const maxSafeInteger = 1 << 53 // 9007199254740992
 
 // errTruncated aborts result streaming once a cap is hit. The connection is
 // discarded afterwards because the rest of the resultset is left unread.
@@ -306,9 +314,19 @@ func fieldValueToJSON(fv *mysql.FieldValue, f *mysql.Field) (any, int) {
 	case mysql.FieldValueTypeNull:
 		return nil, 4
 	case mysql.FieldValueTypeSigned:
-		return fv.AsInt64(), 8
+		n := fv.AsInt64()
+		if n > maxSafeInteger || n < -maxSafeInteger {
+			s := strconv.FormatInt(n, 10)
+			return s, len(s) + 2
+		}
+		return n, 8
 	case mysql.FieldValueTypeUnsigned:
-		return fv.AsUint64(), 8
+		n := fv.AsUint64()
+		if n > maxSafeInteger {
+			s := strconv.FormatUint(n, 10)
+			return s, len(s) + 2
+		}
+		return n, 8
 	case mysql.FieldValueTypeFloat:
 		return fv.AsFloat64(), 8
 	case mysql.FieldValueTypeString:

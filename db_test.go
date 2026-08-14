@@ -106,13 +106,52 @@ func TestFieldValueToJSON(t *testing.T) {
 			wantSize: 8,
 		},
 		{
-			// A value above MaxInt64 is the only way to tell the unsigned path
-			// apart from the signed one.
-			name:     "unsigned above MaxInt64",
+			// Within the float64-safe range the unsigned path stays a number;
+			// a value above MaxInt64 is the only way to tell it from the signed
+			// path.
+			name:     "unsigned above MaxInt64 but float-safe",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeUnsigned, uint64(maxSafeInteger), nil),
+			field:    nil,
+			want:     uint64(maxSafeInteger),
+			wantSize: 8,
+		},
+		{
+			// Past 2^53 a float64 can't round-trip the value, so it goes out as a
+			// string to survive the SDK's marshalling.
+			name:     "signed above the safe range is a string",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeSigned, uint64(math.MaxInt64), nil),
+			field:    nil,
+			want:     "9223372036854775807",
+			wantSize: len("9223372036854775807") + 2,
+		},
+		{
+			name:     "signed below the safe range is a string",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeSigned, uint64(math.MaxInt64+1), nil), // math.MinInt64
+			field:    nil,
+			want:     "-9223372036854775808",
+			wantSize: len("-9223372036854775808") + 2,
+		},
+		{
+			name:     "unsigned above the safe range is a string",
 			value:    mysql.NewFieldValue(mysql.FieldValueTypeUnsigned, uint64(math.MaxUint64), nil),
 			field:    nil,
-			want:     uint64(math.MaxUint64),
+			want:     "18446744073709551615",
+			wantSize: len("18446744073709551615") + 2,
+		},
+		{
+			// Exactly 2^53 is still exact in a float64, so it stays a number.
+			name:     "signed at the safe boundary stays a number",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeSigned, uint64(maxSafeInteger), nil),
+			field:    nil,
+			want:     int64(maxSafeInteger),
 			wantSize: 8,
+		},
+		{
+			name:     "signed just past the boundary is a string",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeSigned, uint64(maxSafeInteger+1), nil),
+			field:    nil,
+			want:     "9007199254740993",
+			wantSize: len("9007199254740993") + 2,
 		},
 		{
 			name:     "float",

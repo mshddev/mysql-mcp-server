@@ -96,5 +96,6 @@ with the table alias (`u.id`, `b.id`); if there is no table to qualify by,
 they get a numeric suffix (`x`, `x_2`). `columns` lists the same keys once in
 SELECT order, since JSON object keys serialize alphabetically. `NULL` is JSON
 `null`. Binary cells become `"<binary, N bytes>"`. `DECIMAL` values stay
-strings to keep precision. MySQL errors pass through verbatim so agents can
-self-correct.
+strings to keep precision, as do integers past ±2^53 (`BIGINT` IDs) — the MCP
+SDK round-trips structured output through a float64, which would otherwise
+corrupt them. MySQL errors pass through verbatim so agents can self-correct.
