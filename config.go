@@ -20,7 +20,6 @@ type Config struct {
 		Database string `yaml:"database"`
 	} `yaml:"database"`
 	Limits struct {
-		MaxRows          int `yaml:"max_rows"`
 		TimeoutSeconds   int `yaml:"timeout_seconds"`
 		MaxResponseBytes int `yaml:"max_response_bytes"`
 		MaxConnections   int `yaml:"max_connections"`
@@ -50,7 +49,6 @@ func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{}
 	cfg.Server.Listen = ":3000"
 	cfg.Database.Port = 3306
-	cfg.Limits.MaxRows = 200
 	cfg.Limits.TimeoutSeconds = 30
 	cfg.Limits.MaxResponseBytes = 1 << 20
 	cfg.Limits.MaxConnections = 10

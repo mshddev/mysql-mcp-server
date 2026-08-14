@@ -21,7 +21,6 @@ var errTruncated = errors.New("result truncated")
 type QueryResult struct {
 	Columns   []string `json:"columns"`
 	Rows      [][]any  `json:"rows"`
-	RowCount  int      `json:"row_count"`
 	Truncated bool     `json:"truncated"`
 	Note      string   `json:"note,omitempty"`
 }
@@ -166,8 +165,7 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 				bytesSoFar += size
 			}
 			res.Rows = append(res.Rows, vals)
-			res.RowCount++
-			if res.RowCount >= p.cfg.Limits.MaxRows || bytesSoFar >= p.cfg.Limits.MaxResponseBytes {
+			if bytesSoFar >= p.cfg.Limits.MaxResponseBytes {
 				return errTruncated
 			}
 			return nil
@@ -191,8 +189,7 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		// Mid-stream abort leaves unread packets; drop the connection.
 		p.release(conn, true)
 		res.Truncated = true
-		res.Note = fmt.Sprintf("truncated at %d rows / %d bytes — narrow the query (add WHERE or LIMIT)",
-			res.RowCount, bytesSoFar)
+		res.Note = fmt.Sprintf("truncated at ~%d bytes — narrow the query (add WHERE or LIMIT)", bytesSoFar)
 	case killed.Load():
 		p.release(conn, true)
 		return nil, fmt.Errorf("query exceeded the %ds timeout and was killed", p.cfg.Limits.TimeoutSeconds)

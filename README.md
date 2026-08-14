@@ -11,8 +11,8 @@ same client shape (URL + bearer token), centralized config/logs/auth.
 - **Read-only, enforced by the database**: connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`.
   SQL text is never inspected — grants are the fence.
-- **Row cap** (default 200) and **response cap** (default 1 MB): streaming
-  stops at the cap and the response says so, with a hint to narrow the query.
+- **Response cap** (default 1 MB): rows stream in and streaming stops once
+  the cap is hit; the response says so, with a hint to narrow the query.
 - **Timeout** (default 30s): the query is killed server-side (`KILL QUERY`
   from a separate connection), with the engine's own statement timeout as
   backup (auto-detects MariaDB `max_statement_time` vs MySQL
@@ -80,7 +80,6 @@ Each teammate sets `STAGING_MYSQL_MCP_TOKEN` in their shell profile.
 {
   "columns": ["id", "name", "phone"],
   "rows": [[1, "Andi", "0812..."], [2, "Budi", null]],
-  "row_count": 2,
   "truncated": false
 }
 ```

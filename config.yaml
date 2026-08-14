@@ -14,7 +14,6 @@ database:
   database: mcp_dev
 
 limits:
-  max_rows: 200
   timeout_seconds: 30
   max_response_bytes: 1048576
   max_connections: 10
