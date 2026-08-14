@@ -14,9 +14,9 @@ server:
   auth_token: s3cret
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `
 
 // unsetVar must never exist in the environment; the missing-variable cases
@@ -62,9 +62,9 @@ server:
   auth_token: s3cret
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 limits:
   timeout_seconds: 5
   max_response_bytes: 1024
@@ -106,9 +106,9 @@ server:
   auth_token: s3cret
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: ${MCP_TEST_DB_PASSWORD}
-  database: mcp_dev
+  dbname: mcp_dev
 `))
 			if err != nil {
 				t.Fatalf("LoadConfig: %v", err)
@@ -134,9 +134,9 @@ server:
   auth_token: ${MCP_TEST_TOKEN}
 database:
   host: ${MCP_TEST_HOST}
-  user: ${MCP_TEST_USER}
+  username: ${MCP_TEST_USER}
   password: ${MCP_TEST_PASSWORD}
-  database: ${MCP_TEST_DATABASE}
+  dbname: ${MCP_TEST_DATABASE}
 `))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -144,7 +144,7 @@ database:
 
 	got := []string{
 		cfg.Server.Listen, cfg.Server.AuthToken, cfg.Database.Host,
-		cfg.Database.User, cfg.Database.Password, cfg.Database.Database,
+		cfg.Database.Username, cfg.Database.Password, cfg.Database.DBName,
 	}
 	want := []string{"0.0.0.0:1234", "tok#en", "db.internal", "reader", "pw:1", "shop"}
 	for i := range want {
@@ -167,9 +167,9 @@ func TestLoadConfigErrors(t *testing.T) {
 			body: `
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
 			wantIn: []string{"auth_token"},
 		},
@@ -181,9 +181,9 @@ server:
   auth_token: ${MCP_TEST_TOKEN}
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
 			wantIn: []string{"auth_token"},
 		},
@@ -193,35 +193,35 @@ database:
 server:
   auth_token: s3cret
 database:
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
 			wantIn: []string{"database.host"},
 		},
 		{
-			name: "missing user",
+			name: "missing username",
 			body: `
 server:
   auth_token: s3cret
 database:
   host: 127.0.0.1
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
-			wantIn: []string{"database.user"},
+			wantIn: []string{"database.username"},
 		},
 		{
-			name: "missing database",
+			name: "missing dbname",
 			body: `
 server:
   auth_token: s3cret
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
 `,
-			wantIn: []string{"database.database"},
+			wantIn: []string{"database.dbname"},
 		},
 		{
 			name:   "zero timeout",
@@ -260,9 +260,9 @@ server:
   auth_token: ${` + unsetVar + `}
 database:
   host: 127.0.0.1
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
 			wantIn: []string{"unset environment variables", unsetVar},
 			// The name of the variable is reported, never a partly-expanded value.
@@ -275,9 +275,9 @@ server:
   auth_token: ${` + unsetVar + `_A}
 database:
   host: ${` + unsetVar + `_B}
-  user: mcp_readonly
+  username: mcp_readonly
   password: devpassword
-  database: mcp_dev
+  dbname: mcp_dev
 `,
 			wantIn: []string{unsetVar + "_A", unsetVar + "_B"},
 		},

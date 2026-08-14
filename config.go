@@ -15,9 +15,9 @@ type Config struct {
 	Database struct {
 		Host     string `yaml:"host"`
 		Port     int    `yaml:"port"`
-		User     string `yaml:"user"`
+		Username string `yaml:"username"`
 		Password string `yaml:"password"`
-		Database string `yaml:"database"`
+		DBName   string `yaml:"dbname"`
 	} `yaml:"database"`
 	Limits struct {
 		TimeoutSeconds   int `yaml:"timeout_seconds"`
@@ -49,8 +49,8 @@ func LoadConfig(path string) (*Config, error) {
 	var missing []string
 	for _, f := range []*string{
 		&cfg.Server.Listen, &cfg.Server.AuthToken,
-		&cfg.Database.Host, &cfg.Database.User,
-		&cfg.Database.Password, &cfg.Database.Database,
+		&cfg.Database.Host, &cfg.Database.Username,
+		&cfg.Database.Password, &cfg.Database.DBName,
 	} {
 		*f = os.Expand(*f, func(key string) string {
 			val, ok := os.LookupEnv(key)
@@ -67,8 +67,8 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Server.AuthToken == "" {
 		return nil, fmt.Errorf("server.auth_token must not be empty")
 	}
-	if cfg.Database.Host == "" || cfg.Database.User == "" || cfg.Database.Database == "" {
-		return nil, fmt.Errorf("database.host, database.user and database.database are required")
+	if cfg.Database.Host == "" || cfg.Database.Username == "" || cfg.Database.DBName == "" {
+		return nil, fmt.Errorf("database.host, database.username and database.dbname are required")
 	}
 	if cfg.Limits.TimeoutSeconds < 1 || cfg.Limits.MaxConnections < 1 || cfg.Limits.MaxResponseBytes < 1 {
 		return nil, fmt.Errorf("limits must all be at least 1 (timeout_seconds=%d, max_connections=%d, max_response_bytes=%d)",

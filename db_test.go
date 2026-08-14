@@ -393,9 +393,9 @@ func testConfig(t *testing.T) *Config {
 	cfg.Server.AuthToken = "test-token"
 	cfg.Database.Host = host
 	cfg.Database.Port = port
-	cfg.Database.User = envOr("MYSQL_TEST_USER", "mcp_readonly")
+	cfg.Database.Username = envOr("MYSQL_TEST_USER", "mcp_readonly")
 	cfg.Database.Password = envOr("MYSQL_TEST_PASSWORD", "devpassword")
-	cfg.Database.Database = envOr("MYSQL_TEST_DATABASE", "mcp_dev")
+	cfg.Database.DBName = envOr("MYSQL_TEST_DATABASE", "mcp_dev")
 	cfg.Limits.TimeoutSeconds = 10
 	cfg.Limits.MaxResponseBytes = 8 << 20
 	cfg.Limits.MaxConnections = 4

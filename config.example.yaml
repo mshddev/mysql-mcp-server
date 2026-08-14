@@ -9,9 +9,9 @@ server:
 database:
   host: 127.0.0.1
   port: 3306
-  user: mcp_readonly
+  username: mcp_readonly
   password: ${MYSQL_PASSWORD}
-  database: mcp_dev
+  dbname: mcp_dev
 
 limits:
   timeout_seconds: 30
