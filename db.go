@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-mysql-org/go-mysql/client"
@@ -135,18 +136,23 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		return nil, err
 	}
 
+	// The watcher must be joined before deciding the connection's fate: if the
+	// deadline and completion race, a KILL may target the connection after it
+	// would have been reused for someone else's query.
 	done := make(chan struct{})
-	killed := false
+	watcherDone := make(chan struct{})
+	var killed atomic.Bool
 	go func() {
+		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
-			killed = true
+			killed.Store(true)
 			p.killQuery(conn.GetConnectionID())
 		case <-done:
 		}
 	}()
 
-	res := &QueryResult{Rows: [][]any{}}
+	res := &QueryResult{Columns: []string{}, Rows: [][]any{}}
 	bytesSoFar := 0
 	var fields []*mysql.Field
 	var streamResult mysql.Result
@@ -174,17 +180,20 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 			return nil
 		})
 	close(done)
+	<-watcherDone
 
 	switch {
 	case err == nil:
-		p.release(conn, false)
+		// If a kill fired anyway (deadline lost the race to completion), the
+		// connection may still receive it — discard rather than reuse.
+		p.release(conn, killed.Load())
 	case errors.Is(err, errTruncated):
 		// Mid-stream abort leaves unread packets; drop the connection.
 		p.release(conn, true)
 		res.Truncated = true
 		res.Note = fmt.Sprintf("truncated at %d rows / %d bytes — narrow the query (add WHERE or LIMIT)",
 			res.RowCount, bytesSoFar)
-	case killed:
+	case killed.Load():
 		p.release(conn, true)
 		return nil, fmt.Errorf("query exceeded the %ds timeout and was killed", p.cfg.Limits.TimeoutSeconds)
 	default:
