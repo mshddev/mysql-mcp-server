@@ -50,7 +50,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Server.Listen = ":3000"
 	cfg.Database.Port = 3306
 	cfg.Limits.TimeoutSeconds = 30
-	cfg.Limits.MaxResponseBytes = 1 << 20
+	cfg.Limits.MaxResponseBytes = 500 << 10
 	cfg.Limits.MaxConnections = 10
 
 	if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {

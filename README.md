@@ -11,7 +11,7 @@ same client shape (URL + bearer token), centralized config/logs/auth.
 - **Read-only, enforced by the database**: connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`.
   SQL text is never inspected — grants are the fence.
-- **Response cap** (default 1 MB): rows stream in and streaming stops once
+- **Response cap** (default 500 KB, ~125K tokens): rows stream in and streaming stops once
   the cap is hit; the response says so, with a hint to narrow the query.
 - **Timeout** (default 30s): the query is killed server-side (`KILL QUERY`
   from a separate connection), with the engine's own statement timeout as

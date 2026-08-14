@@ -15,5 +15,5 @@ database:
 
 limits:
   timeout_seconds: 30
-  max_response_bytes: 1048576
+  max_response_bytes: 512000
   max_connections: 10
