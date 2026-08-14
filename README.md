@@ -1,10 +1,7 @@
 # mysql-mcp-server
 
-Minimalist MCP server for MySQL/MariaDB. One tool — `query` — runs read-only
+MCP server for MySQL/MariaDB. One tool — `query` — runs read-only
 SQL over streamable HTTP (MCP spec 2026-07-28, stateless) and returns rows.
-
-Built as the team replacement for the old `staging_mysql` MCP entry:
-same client shape (URL + bearer token), centralized config/logs/auth.
 
 ## Safety model
 
@@ -96,12 +93,3 @@ Each teammate sets `STAGING_MYSQL_MCP_TOKEN` in their shell profile.
 Column names appear once; rows are arrays. `NULL` is JSON `null`. Binary
 cells become `"<binary, N bytes>"`. `DECIMAL` values stay strings to keep
 precision. MySQL errors pass through verbatim so agents can self-correct.
-
-## Next slices (deliberately not in this one)
-
-- Per-user tokens (audit trail: who ran what)
-- PII masking — the driver (`go-mysql-org/go-mysql`) already exposes each
-  result column's origin table/column (`Field.OrgTable`/`OrgName`), which is
-  the foundation; TiDB parser for query gating when needed
-- Write support behind a separate, gated path
-- Shared VM deployment
