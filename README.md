@@ -24,14 +24,16 @@ same client shape (URL + bearer token), centralized config/logs/auth.
 
 ```sh
 go build -o mysql-mcp-server .
+cp config.example.yaml config.yaml   # then adjust host/database per environment
 export MCP_AUTH_TOKEN=...     # token clients must present
 export MYSQL_PASSWORD=...     # password of the read-only DB user
 ./mysql-mcp-server --config ./config.yaml
 ```
 
-`config.yaml` holds structure and limits; `${VAR}` placeholders pull the two
-secrets from the environment, so nothing sensitive lives in git. Startup
-fails fast if the database is unreachable or a referenced env var is unset.
+`config.yaml` is gitignored — only `config.example.yaml` ships. `${VAR}`
+placeholders pull the two secrets from the environment, so nothing sensitive
+lives in git. Startup fails fast if the database is unreachable or a
+referenced env var is unset.
 
 Logs are one JSON line per query on stdout: time, SQL, duration_ms,
 truncated flag, error if any. Results are never logged.
