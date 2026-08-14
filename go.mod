@@ -1,4 +1,4 @@
-module github.com/mamikos/mysql-mcp-server
+module github.com/mshddev/mysql-mcp-server
 
 go 1.26.1
 
