@@ -8,10 +8,6 @@ SQL over streamable HTTP (MCP spec 2026-07-28, stateless) and returns rows.
 - **Read-only, enforced by the database**: connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`.
   SQL text is never inspected — grants are the fence.
-- **No session bleed between callers**: any statement that could change
-  session state (`SET`, `USE`, ... — anything answered without a resultset)
-  gets its connection discarded instead of pooled, so one caller can't
-  weaken the fences for the next.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens of result
   text): rows stream in and streaming stops once the cap is hit; the response
   says so, with a hint to narrow the query. Note the raw HTTP response is
