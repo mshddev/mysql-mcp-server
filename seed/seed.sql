@@ -33,6 +33,13 @@ INSERT INTO bookings (user_id, room_name, price, status) VALUES
   (2, 'Kos Anggrek B2', 2250000.50, 'paid'),
   (3, 'Kos Mawar C3', 900000.00, 'cancelled');
 
+-- A view that renames a PII column. What the wire protocol reports as the
+-- column's origin here differs between MariaDB (the new name — masking rules
+-- for the base column can't see through it) and MySQL variants; the masking
+-- integration tests pin whichever behavior the server under test exhibits.
+CREATE VIEW user_contacts AS
+  SELECT id, name AS contact_name, phone AS contact FROM users;
+
 -- Big table to exercise the row/byte caps (~10k rows via cross join).
 CREATE TABLE big (
   id INT PRIMARY KEY AUTO_INCREMENT,

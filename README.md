@@ -20,6 +20,23 @@ Read-only is enforced by the database, not by parsing your SQL.
 - **Read-only, enforced by the database** — connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`. The SQL
   text is never inspected — grants are the fence.
+- **PII masking (optional)** — values of configured columns come back as
+  `"<masked>"`, matched on the column's *origin* name from the wire protocol.
+  A plain column keeps its origin through a rename (`phone AS x`), so simple
+  aliases can't dodge it. This is hygiene for cooperative callers — keeping
+  personal data out of agent transcripts — **not a security boundary**. Known
+  ways masking does **not** apply (a caller that must never see the data needs
+  database-level controls instead):
+    - computed columns — `CONCAT(...)`, aggregates, `GROUP_CONCAT(col)` — have
+      no origin and pass through;
+    - **derived tables, CTEs and `UNION`** lose the base-column origin on the
+      wire, so those columns currently pass through unmasked — a known gap, fix
+      pending;
+    - **any view** reports the view as the origin table, so a table-qualified
+      rule (`users.address`) stops matching through a view; unqualified rules
+      (`address`) still apply;
+    - values can still be inferred with `WHERE` conditions, and query text in
+      the server log is not scrubbed.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
   in and stop once the cap is hit; the response says so and hints to narrow the
   query. The raw HTTP body is roughly double the cap, because MCP encodes tool
@@ -86,6 +103,11 @@ limits:
   timeout_seconds: 30
   max_response_bytes: 512000
   max_connections: 10
+
+masking:                # optional; omit the section to run without masking
+  enabled: true
+  mask: [phone, "*_phone", email, name, address]
+  except: ["room_types.display_name"]
 ```
 
 | Key | Meaning |
@@ -98,6 +120,14 @@ limits:
 | `limits.timeout_seconds` | Per-query timeout before a server-side kill. |
 | `limits.max_response_bytes` | Result-size cap before truncation. |
 | `limits.max_connections` | Pool size, doubling as the concurrency ceiling. |
+| `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
+| `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
+| `masking.except` | Carve-outs for false positives; beats `mask`. |
+
+`config.example.yaml` ships a starter `mask` list to trim, not a blank page —
+forgetting a column is the failure mode. A `masking` section that is enabled
+but has no `mask` rules refuses to start; opt out explicitly with
+`enabled: false` or by omitting the section.
 
 Startup fails fast if the database is unreachable or a referenced env var is
 unset.
@@ -164,6 +194,9 @@ A few rules worth knowing:
   table alias (`u.id`, `b.id`); with no table to qualify by, they get a numeric
   suffix (`x`, `x_2`). `columns` lists the keys once, in SELECT order.
 - `NULL` is JSON `null`. Binary cells become `"<binary, N bytes>"`.
+- Columns caught by the server's PII policy come back as `"<masked>"` (their
+  `NULL`s stay `null`); the response names them in `masked_columns` and the
+  `note` says why, so the agent won't mistake the placeholder for data.
 - `DECIMAL` stays a string to keep precision, and so do integers past ±2^53
   (`BIGINT` IDs) — the MCP SDK round-trips numbers through a float64, which would
   otherwise corrupt them.

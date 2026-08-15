@@ -24,6 +24,19 @@ type Config struct {
 		MaxResponseBytes int `yaml:"max_response_bytes"`
 		MaxConnections   int `yaml:"max_connections"`
 	} `yaml:"limits"`
+	// Masking is opt-in per deployment: an absent section means off.
+	Masking *MaskingConfig `yaml:"masking"`
+
+	// masker is derived from Masking at load time; nil when masking is off.
+	masker *Masker
+}
+
+type MaskingConfig struct {
+	// Enabled is a pointer so "omitted" is distinguishable from "false":
+	// omitted with rules present means true.
+	Enabled *bool    `yaml:"enabled"`
+	Mask    []string `yaml:"mask"`
+	Except  []string `yaml:"except"`
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
@@ -73,6 +86,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Limits.TimeoutSeconds < 1 || cfg.Limits.MaxConnections < 1 || cfg.Limits.MaxResponseBytes < 1 {
 		return nil, fmt.Errorf("limits must all be at least 1 (timeout_seconds=%d, max_connections=%d, max_response_bytes=%d)",
 			cfg.Limits.TimeoutSeconds, cfg.Limits.MaxConnections, cfg.Limits.MaxResponseBytes)
+	}
+	if cfg.masker, err = NewMasker(cfg.Masking); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

@@ -17,3 +17,33 @@ limits:
   timeout_seconds: 30
   max_response_bytes: 512000
   max_connections: 10
+
+# PII masking: values of matching columns are returned as "<masked>".
+# Entries are case-insensitive globs matched against a column's real (origin)
+# name as reported by the wire protocol — aliases can't dodge them. A bare
+# entry ("phone") matches that column name in every table; a qualified one
+# ("users.address") matches only there. "except" carves false positives back
+# out and beats "mask". Omit the whole section to run without masking; set
+# enabled: false to keep the rules but switch masking off. Computed columns
+# (COUNT(*), CONCAT(...)) have no origin and always pass through.
+masking:
+  enabled: true
+  mask:
+    - phone
+    - "*_phone"
+    - phone_number
+    - email
+    - "*_email"
+    - name          # exact on purpose, NOT "*_name": room_name etc. are business data
+    - address
+    - "*_address"
+    - nik
+    - ktp
+    - "*_ktp*"
+    - npwp
+    - birth_date
+    - birthday
+    - password
+    - "*_token"
+    - "*account_number*"
+  except: []

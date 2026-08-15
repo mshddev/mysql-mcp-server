@@ -48,11 +48,18 @@ func main() {
 		Version: version,
 	}, nil)
 
+	description := "Run a read-only SQL query against the MySQL database and get rows back. " +
+		"Use SHOW TABLES / DESCRIBE <table> to discover the schema. " +
+		"Results are capped; narrow queries with WHERE/LIMIT."
+	if cfg.masker != nil {
+		description += " Some columns come back as \"<masked>\" under this server's PII policy " +
+			"(listed per result in masked_columns); that is intended, do not try to recover the values. " +
+			"Select PII columns as plain columns (aliases are fine) — computed expressions cannot be " +
+			"traced for masking, so do not wrap PII columns in functions like CONCAT."
+	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "query",
-		Description: "Run a read-only SQL query against the MySQL database and get rows back. " +
-			"Use SHOW TABLES / DESCRIBE <table> to discover the schema. " +
-			"Results are capped; narrow queries with WHERE/LIMIT.",
+		Name:        "query",
+		Description: description,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input QueryInput) (*mcp.CallToolResult, *QueryResult, error) {
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Limits.TimeoutSeconds)*time.Second)
 		defer cancel()
@@ -78,7 +85,7 @@ func main() {
 	)
 
 	logger.Info("startup", "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "version", version)
+		cfg.Database.Host, "masking", cfg.masker != nil, "version", version)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           bearerAuth(cfg.Server.AuthToken, handler),

@@ -30,26 +30,31 @@ var errTruncated = errors.New("result truncated")
 type QueryResult struct {
 	// Columns preserves SELECT order; the row objects can't, because JSON
 	// object keys serialize alphabetically.
-	Columns   []string         `json:"columns"`
-	Rows      []map[string]any `json:"rows"`
-	Truncated bool             `json:"truncated"`
-	Note      string           `json:"note,omitempty"`
+	Columns []string         `json:"columns"`
+	Rows    []map[string]any `json:"rows"`
+	// MaskedColumns names the result columns whose values the PII policy
+	// replaced, so a caller can tell "<masked>" apart from real data.
+	MaskedColumns []string `json:"masked_columns,omitempty"`
+	Truncated     bool     `json:"truncated"`
+	Note          string   `json:"note,omitempty"`
 }
 
 type Pool struct {
-	cfg  *Config
-	addr string
-	sem  chan struct{}     // caps concurrent queries at MaxConnections
-	idle chan *client.Conn // reusable connections, capacity MaxConnections
+	cfg    *Config
+	addr   string
+	masker *Masker           // nil when masking is off
+	sem    chan struct{}     // caps concurrent queries at MaxConnections
+	idle   chan *client.Conn // reusable connections, capacity MaxConnections
 }
 
 func NewPool(cfg *Config) *Pool {
 	n := cfg.Limits.MaxConnections
 	return &Pool{
-		cfg:  cfg,
-		addr: fmt.Sprintf("%s:%d", cfg.Database.Host, cfg.Database.Port),
-		sem:  make(chan struct{}, n),
-		idle: make(chan *client.Conn, n),
+		cfg:    cfg,
+		addr:   fmt.Sprintf("%s:%d", cfg.Database.Host, cfg.Database.Port),
+		masker: cfg.masker,
+		sem:    make(chan struct{}, n),
+		idle:   make(chan *client.Conn, n),
 	}
 }
 
@@ -186,13 +191,22 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	res := &QueryResult{Columns: []string{}, Rows: []map[string]any{}}
 	bytesSoFar := 0
 	var fields []*mysql.Field
+	var masked []bool
 	var streamResult mysql.Result
 
 	err = conn.ExecuteSelectStreaming(sql, &streamResult,
 		func(row []mysql.FieldValue) error {
 			vals := make(map[string]any, len(row))
 			for i := range row {
-				v, size := fieldValueToJSON(&row[i], fieldAt(fields, i))
+				var v any
+				var size int
+				if i < len(masked) && masked[i] && row[i].Type != mysql.FieldValueTypeNull {
+					// NULL stays nil even in a masked column: whether a value
+					// exists is not PII, the value is.
+					v, size = maskedValue, len(maskedValue)+2
+				} else {
+					v, size = fieldValueToJSON(&row[i], fieldAt(fields, i))
+				}
 				key := labelAt(res.Columns, i)
 				vals[key] = v
 				bytesSoFar += size + len(key) + 4 // the key is repeated per row
@@ -206,6 +220,13 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 		func(result *mysql.Result) error {
 			fields = result.Fields
 			res.Columns = columnLabels(fields)
+			masked = make([]bool, len(fields))
+			for i, f := range fields {
+				if p.masker.Masked(f.OrgTable, f.OrgName) {
+					masked[i] = true
+					res.MaskedColumns = append(res.MaskedColumns, res.Columns[i])
+				}
+			}
 			return nil
 		})
 	close(done)
@@ -233,6 +254,16 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	default:
 		p.release(conn, true)
 		return nil, err
+	}
+	// Composed here, at the single success exit, so the truncation note above
+	// cannot overwrite it.
+	if len(res.MaskedColumns) > 0 {
+		note := fmt.Sprintf("values in %s are %q by server PII policy",
+			strings.Join(res.MaskedColumns, ", "), maskedValue)
+		if res.Note != "" {
+			note += "; " + res.Note
+		}
+		res.Note = note
 	}
 	return res, nil
 }

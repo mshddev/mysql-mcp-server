@@ -154,6 +154,77 @@ database:
 	}
 }
 
+func TestLoadConfigMasking(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantMasker bool
+		wantErr    string
+	}{
+		{name: "absent section is off", body: validConfig, wantMasker: false},
+		{
+			// "masking:" with no value parses as null and leaves the pointer
+			// nil — off, same as absent. Distinct from "masking: {}" below.
+			name:       "null section is off",
+			body:       validConfig + "masking:\n",
+			wantMasker: false,
+		},
+		{
+			// An explicitly empty section says "masking" while masking
+			// nothing: a misconfiguration, not a choice.
+			name:    "empty section is an error",
+			body:    validConfig + "masking: {}\n",
+			wantErr: "no rules",
+		},
+		{
+			name:       "rules without enabled are active",
+			body:       validConfig + "masking:\n  mask: [phone, \"*_phone\", users.address]\n",
+			wantMasker: true,
+		},
+		{
+			name:       "enabled false is off",
+			body:       validConfig + "masking:\n  enabled: false\n  mask: [phone]\n",
+			wantMasker: false,
+		},
+		{
+			name:    "enabled true without rules is an error",
+			body:    validConfig + "masking:\n  enabled: true\n",
+			wantErr: "no rules",
+		},
+		{
+			name:    "bad glob is an error",
+			body:    validConfig + "masking:\n  mask: [\"[bad\"]\n",
+			wantErr: "masking.mask",
+		},
+		{
+			name:    "bad glob is an error even while disabled",
+			body:    validConfig + "masking:\n  enabled: false\n  mask: [\"[bad\"]\n",
+			wantErr: "masking.mask",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not mention %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if (cfg.masker != nil) != tt.wantMasker {
+				t.Errorf("masker = %v, want present: %v", cfg.masker, tt.wantMasker)
+			}
+		})
+	}
+}
+
 func TestLoadConfigErrors(t *testing.T) {
 	tests := []struct {
 		name    string

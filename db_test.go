@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-mysql-org/go-mysql/mysql"
 )
 
@@ -871,6 +872,188 @@ func TestQueryError(t *testing.T) {
 
 	if res := mustQuery(t, p, "SELECT 1"); len(res.Rows) != 1 {
 		t.Errorf("follow-up query returned %d rows, want 1", len(res.Rows))
+	}
+}
+
+func maskerForTest(t *testing.T, mask, except []string) *Masker {
+	t.Helper()
+	m, err := NewMasker(&MaskingConfig{Mask: mask, Except: except})
+	if err != nil {
+		t.Fatalf("NewMasker: %v", err)
+	}
+	return m
+}
+
+func TestQueryMasking(t *testing.T) {
+	p := newTestPool(t, func(cfg *Config) {
+		cfg.masker = maskerForTest(t, []string{"phone", "email", "avatar"}, nil)
+	})
+
+	res := mustQuery(t, p, "SELECT id, name, email, phone, avatar FROM users ORDER BY id")
+
+	first := res.Rows[0]
+	if asNumber(t, first["id"]) != 1 {
+		t.Errorf("id = %v, want 1", first["id"])
+	}
+	// Unlisted columns keep their real values.
+	if first["name"] != "Andi Wijaya" {
+		t.Errorf("name = %#v, want %q", first["name"], "Andi Wijaya")
+	}
+	if first["email"] != maskedValue {
+		t.Errorf("email = %#v, want %q", first["email"], maskedValue)
+	}
+	if first["phone"] != maskedValue {
+		t.Errorf("phone = %#v, want %q", first["phone"], maskedValue)
+	}
+	// A masked BLOB gets the policy placeholder, not the binary one.
+	if first["avatar"] != maskedValue {
+		t.Errorf("avatar = %#v, want %q", first["avatar"], maskedValue)
+	}
+
+	// NULL stays an explicit nil even in a masked column: whether a value
+	// exists is not PII.
+	second := res.Rows[1]
+	if v, present := second["phone"]; !present || v != nil {
+		t.Errorf("phone of row 2 = %#v (present %v), want an explicit nil", v, present)
+	}
+	if v, present := second["avatar"]; !present || v != nil {
+		t.Errorf("avatar of row 2 = %#v (present %v), want an explicit nil", v, present)
+	}
+
+	wantMasked := []string{"email", "phone", "avatar"}
+	if len(res.MaskedColumns) != len(wantMasked) {
+		t.Fatalf("MaskedColumns = %v, want %v", res.MaskedColumns, wantMasked)
+	}
+	for i, want := range wantMasked {
+		if res.MaskedColumns[i] != want {
+			t.Errorf("MaskedColumns[%d] = %q, want %q", i, res.MaskedColumns[i], want)
+		}
+	}
+	if !strings.Contains(res.Note, "PII policy") {
+		t.Errorf("Note = %q, want it to explain the PII policy", res.Note)
+	}
+
+	// An alias cannot dodge masking; the reported label is the alias.
+	res = mustQuery(t, p, "SELECT phone AS mobile FROM users WHERE id = 1")
+	if res.Rows[0]["mobile"] != maskedValue {
+		t.Errorf("mobile = %#v, want %q", res.Rows[0]["mobile"], maskedValue)
+	}
+	if len(res.MaskedColumns) != 1 || res.MaskedColumns[0] != "mobile" {
+		t.Errorf("MaskedColumns = %v, want [mobile]", res.MaskedColumns)
+	}
+}
+
+func TestQueryMaskingExpressionsPassThrough(t *testing.T) {
+	p := newTestPool(t, func(cfg *Config) {
+		cfg.masker = maskerForTest(t, []string{"phone"}, nil)
+	})
+
+	// Aggregates have no wire origin and must not be masked.
+	res := mustQuery(t, p, "SELECT COUNT(*) AS n FROM users")
+	if asNumber(t, res.Rows[0]["n"]) != 3 {
+		t.Errorf("COUNT(*) = %v, want 3", res.Rows[0]["n"])
+	}
+	if len(res.MaskedColumns) != 0 || res.Note != "" {
+		t.Errorf("MaskedColumns = %v, Note = %q, want none for an aggregate", res.MaskedColumns, res.Note)
+	}
+
+	// The accepted gap from the design: an expression severs the origin, so
+	// the raw value passes through. Pinned so a behavior change is noticed.
+	res = mustQuery(t, p, "SELECT CONCAT(phone, '') AS c FROM users WHERE id = 1")
+	if res.Rows[0]["c"] != "081234567890" {
+		t.Errorf("CONCAT(phone) = %#v, want the raw value (expressions pass through by design)", res.Rows[0]["c"])
+	}
+}
+
+// wireOrgName reports the origin name the server sends for the first column,
+// dialing directly so the test sees exactly the metadata Query sees.
+func wireOrgName(t *testing.T, p *Pool, sql string) string {
+	t.Helper()
+	conn, err := client.Connect(p.addr, p.cfg.Database.Username,
+		p.cfg.Database.Password, p.cfg.Database.DBName)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	res, err := conn.Execute(sql)
+	if err != nil {
+		if strings.Contains(err.Error(), "user_contacts") {
+			t.Skipf("user_contacts view missing — re-seed with seed/seed.sql: %v", err)
+		}
+		t.Fatalf("Execute(%q): %v", sql, err)
+	}
+	if len(res.Fields) == 0 {
+		t.Fatalf("Execute(%q) returned no fields", sql)
+	}
+	return string(res.Fields[0].OrgName)
+}
+
+// The invariant: a column is masked iff the origin name the server reports
+// matches the rules. What servers report for views and derived tables differs
+// (MariaDB severs the origin through a renaming view, MySQL variants may
+// not — spike 2026-08-14), so expectations are derived from the wire rather
+// than hard-coded per server.
+func TestQueryMaskingFollowsWireOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		sql    string
+		column string
+	}{
+		{
+			name:   "derived table",
+			sql:    "SELECT * FROM (SELECT phone FROM users WHERE id = 1) t",
+			column: "phone",
+		},
+		{
+			name:   "renaming view",
+			sql:    "SELECT contact FROM user_contacts WHERE id = 1",
+			column: "contact",
+		},
+	}
+	// One rule for the base column, one for the view's renamed column: the
+	// second is the documented mitigation for renaming views.
+	for _, rule := range []string{"phone", "contact"} {
+		p := newTestPool(t, func(cfg *Config) {
+			cfg.masker = maskerForTest(t, []string{rule}, nil)
+		})
+		for _, tt := range tests {
+			t.Run(rule+"/"+tt.name, func(t *testing.T) {
+				orgName := wireOrgName(t, p, tt.sql)
+				wantMasked := p.masker.Masked(nil, []byte(orgName))
+
+				res := mustQuery(t, p, tt.sql)
+				got := res.Rows[0][tt.column]
+				if wantMasked && got != maskedValue {
+					t.Errorf("%q = %#v, want %q (wire org_name %q matches rule %q)",
+						tt.column, got, maskedValue, orgName, rule)
+				}
+				if !wantMasked && got != "081234567890" {
+					t.Errorf("%q = %#v, want the raw value (wire org_name %q does not match rule %q)",
+						tt.column, got, orgName, rule)
+				}
+			})
+		}
+	}
+}
+
+func TestQueryMaskingNoteMergesWithTruncation(t *testing.T) {
+	p := newTestPool(t, func(cfg *Config) {
+		cfg.Limits.MaxConnections = 1
+		cfg.Limits.MaxResponseBytes = 10 << 10
+		cfg.masker = maskerForTest(t, []string{"filler"}, nil)
+	})
+
+	res := mustQuery(t, p, "SELECT id, filler FROM big")
+	if !res.Truncated {
+		t.Fatal("Truncated = false, want true")
+	}
+	for _, want := range []string{"PII policy", "truncated"} {
+		if !strings.Contains(res.Note, want) {
+			t.Errorf("Note = %q, want it to mention %q", res.Note, want)
+		}
+	}
+	if len(res.Rows) == 0 || res.Rows[0]["filler"] != maskedValue {
+		t.Errorf("filler = %#v, want %q", res.Rows[0]["filler"], maskedValue)
 	}
 }
 
