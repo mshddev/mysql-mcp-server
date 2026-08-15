@@ -1,0 +1,123 @@
+package main
+
+import (
+	"slices"
+	"strings"
+	"testing"
+)
+
+func strictMasker(t *testing.T, mask []string) *Masker {
+	t.Helper()
+	m, err := NewMasker(&MaskingConfig{Strict: true, Mask: mask})
+	if err != nil {
+		t.Fatalf("NewMasker: %v", err)
+	}
+	return m
+}
+
+func TestPlanQuery(t *testing.T) {
+	m := strictMasker(t, []string{"phone", "*_phone", "email", "users.address"})
+
+	tests := []struct {
+		name     string
+		sql      string
+		wantErr  string  // non-empty => expect a refusal mentioning this
+		wire     bool    // expect useWire (simple query, tag trusted)
+		wantMask []bool  // expected per-column decision when traced
+	}{
+		// --- simple shapes take the wire path ---
+		{name: "plain column", sql: "SELECT phone FROM users", wire: true},
+		{name: "star on a base table", sql: "SELECT * FROM users", wire: true},
+		{name: "aliased plain column", sql: "SELECT phone AS x FROM users", wire: true},
+		{name: "base-table join", sql: "SELECT u.phone, o.total FROM users u JOIN orders o ON o.uid = u.id", wire: true},
+		{name: "show", sql: "SHOW TABLES", wire: true},
+		{name: "describe", sql: "DESCRIBE users", wire: true},
+		{name: "explain", sql: "EXPLAIN SELECT phone FROM users", wire: true},
+
+		// --- computed columns are traced ---
+		{name: "concat of pii is masked", sql: "SELECT CONCAT(phone, 'x') AS c FROM users", wantMask: []bool{true}},
+		{name: "group_concat of pii is masked (F5)", sql: "SELECT GROUP_CONCAT(phone) AS d FROM users", wantMask: []bool{true}},
+		{name: "max of pii is masked", sql: "SELECT MAX(phone) AS m FROM users", wantMask: []bool{true}},
+		{name: "plain count is a number", sql: "SELECT COUNT(phone) AS n FROM users", wantMask: []bool{false}},
+		{name: "count star is a number", sql: "SELECT COUNT(*) AS n FROM users", wantMask: []bool{false}},
+		{name: "mixed", sql: "SELECT id, CONCAT(phone) AS c FROM users", wantMask: []bool{false, true}},
+		{name: "expression over non-pii passes", sql: "SELECT CONCAT(id, room_name) AS c FROM bookings", wantMask: []bool{false}},
+
+		// --- the peer's derived-table / CTE / union bypasses ---
+		{name: "derived + alias (F2)", sql: "SELECT x FROM (SELECT phone AS x FROM users) t", wantMask: []bool{true}},
+		{name: "cte (F2)", sql: "WITH c AS (SELECT phone AS p FROM users) SELECT p FROM c", wantMask: []bool{true}},
+		{name: "union same column (F1)", sql: "SELECT phone FROM users UNION ALL SELECT phone FROM users", wantMask: []bool{true}},
+		{
+			name:     "union smuggle (F1)",
+			sql:      "SELECT id, name FROM users WHERE 1=0 UNION ALL SELECT id, phone FROM users",
+			wantMask: []bool{false, true}, // the column labelled name secretly carries phone
+		},
+		{name: "scalar subquery of pii", sql: "SELECT (SELECT phone FROM users LIMIT 1) AS x FROM bookings", wantMask: []bool{true}},
+
+		// --- tracing through a join inside a derived table ---
+		{name: "qualified pii through derived join", sql: "SELECT c FROM (SELECT u.phone AS c FROM users u JOIN bookings b ON b.user_id = u.id) t", wantMask: []bool{true}},
+		{name: "qualified non-pii through derived join", sql: "SELECT c FROM (SELECT b.price AS c FROM users u JOIN bookings b ON b.user_id = u.id) t", wantMask: []bool{false}},
+		{name: "ambiguous column in derived join is hidden", sql: "SELECT c FROM (SELECT status AS c FROM users u JOIN bookings b ON b.user_id = u.id) t", wantMask: []bool{true}},
+
+		// --- a nested star we can't enumerate: hide the column, don't refuse ---
+		{name: "star inside a derived table hides the outer column", sql: "SELECT x FROM (SELECT * FROM users) t", wantMask: []bool{true}},
+
+		// --- window functions: value comes from args, not the ordering ---
+		{name: "row_number over pii ordering is not masked", sql: "SELECT ROW_NUMBER() OVER (ORDER BY phone) AS rn, id FROM users", wantMask: []bool{false, false}},
+		{name: "lag of a pii column is masked", sql: "SELECT LAG(phone) OVER (ORDER BY id) AS l FROM users", wantMask: []bool{true}},
+		{name: "first_value of pii is masked", sql: "SELECT FIRST_VALUE(phone) OVER (ORDER BY id) AS f FROM users", wantMask: []bool{true}},
+
+		// --- refusals ---
+		{name: "star over a derived table", sql: "SELECT * FROM (SELECT phone FROM users) t", wantErr: "SELECT *"},
+		{name: "star in a union branch", sql: "SELECT * FROM users UNION SELECT * FROM users", wantErr: "SELECT *"},
+		{name: "table form is refused (MySQL 8 SELECT *)", sql: "TABLE users", wantErr: "TABLE or VALUES"},
+		{name: "values form is refused", sql: "VALUES ROW(1, 2)", wantErr: "TABLE or VALUES"},
+		{name: "non-select", sql: "INSERT INTO users (name) VALUES ('x')", wantErr: "only SELECT"},
+		{name: "unparseable", sql: "SELECT * FRM users", wantErr: "could not parse"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := m.planQuery(tt.sql)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("planQuery(%q) succeeded, want a refusal mentioning %q", tt.sql, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("refusal %q does not mention %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("planQuery(%q): %v", tt.sql, err)
+			}
+			if tt.wire {
+				if !plan.useWire {
+					t.Errorf("useWire = false, want true (mask=%v)", plan.mask)
+				}
+				return
+			}
+			if plan.useWire {
+				t.Fatalf("useWire = true, want the query traced")
+			}
+			if !slices.Equal(plan.mask, tt.wantMask) {
+				t.Errorf("mask = %v, want %v", plan.mask, tt.wantMask)
+			}
+		})
+	}
+}
+
+func TestNewMaskerStrict(t *testing.T) {
+	// strict on a disabled section is a contradiction.
+	if _, err := NewMasker(&MaskingConfig{Strict: true, Enabled: new(false), Mask: []string{"phone"}}); err == nil {
+		t.Error("strict + disabled masking was accepted, want an error")
+	}
+	// strict with rules is fine and sets the flag.
+	m, err := NewMasker(&MaskingConfig{Strict: true, Mask: []string{"phone"}})
+	if err != nil {
+		t.Fatalf("NewMasker: %v", err)
+	}
+	if m == nil || !m.strict {
+		t.Errorf("masker = %v, want a strict masker", m)
+	}
+}

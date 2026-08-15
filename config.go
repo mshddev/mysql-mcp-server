@@ -37,6 +37,10 @@ type MaskingConfig struct {
 	Enabled *bool    `yaml:"enabled"`
 	Mask    []string `yaml:"mask"`
 	Except  []string `yaml:"except"`
+	// Strict turns on query-parsing enforcement: the server traces each result
+	// column back to its origin instead of trusting the wire tag, closing the
+	// derived-table/CTE/UNION/computed-column leaks that light masking has.
+	Strict bool `yaml:"strict"`
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the

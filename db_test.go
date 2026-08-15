@@ -1057,6 +1057,97 @@ func TestQueryMaskingNoteMergesWithTruncation(t *testing.T) {
 	}
 }
 
+// Strict mode, end to end: the peer's bypass queries must now mask or refuse
+// against a real database, not just in the planner unit tests.
+func TestQueryStrictMasking(t *testing.T) {
+	newStrictPool := func(t *testing.T) *Pool {
+		return newTestPool(t, func(cfg *Config) {
+			cfg.masker = strictMasker(t, []string{"phone", "email"})
+		})
+	}
+
+	t.Run("derived table alias no longer leaks (F2)", func(t *testing.T) {
+		p := newStrictPool(t)
+		res := mustQuery(t, p, "SELECT x FROM (SELECT phone AS x FROM users WHERE id = 1) t")
+		if res.Rows[0]["x"] != maskedValue {
+			t.Errorf("x = %#v, want %q", res.Rows[0]["x"], maskedValue)
+		}
+		if len(res.MaskedColumns) != 1 || res.MaskedColumns[0] != "x" {
+			t.Errorf("MaskedColumns = %v, want [x]", res.MaskedColumns)
+		}
+	})
+
+	t.Run("union no longer leaks (F1)", func(t *testing.T) {
+		p := newStrictPool(t)
+		res := mustQuery(t, p, "SELECT phone FROM users UNION ALL SELECT phone FROM users")
+		masked := 0
+		for _, row := range res.Rows {
+			switch v := row["phone"]; v {
+			case nil: // a NULL phone stays null
+			case maskedValue:
+				masked++
+			default:
+				t.Errorf("phone = %#v, want %q or null", v, maskedValue)
+			}
+		}
+		if masked == 0 {
+			t.Error("no phone values were masked in the union result")
+		}
+	})
+
+	t.Run("group_concat no longer dumps (F5)", func(t *testing.T) {
+		p := newStrictPool(t)
+		res := mustQuery(t, p, "SELECT GROUP_CONCAT(phone) AS dump FROM users")
+		if res.Rows[0]["dump"] != maskedValue {
+			t.Errorf("dump = %#v, want %q", res.Rows[0]["dump"], maskedValue)
+		}
+	})
+
+	t.Run("count is a number, not masked", func(t *testing.T) {
+		p := newStrictPool(t)
+		res := mustQuery(t, p, "SELECT COUNT(phone) AS n FROM users")
+		if asNumber(t, res.Rows[0]["n"]) != 2 {
+			t.Errorf("COUNT(phone) = %v, want 2", res.Rows[0]["n"])
+		}
+		if len(res.MaskedColumns) != 0 {
+			t.Errorf("MaskedColumns = %v, want none for a count", res.MaskedColumns)
+		}
+	})
+
+	t.Run("simple star still runs via the wire path", func(t *testing.T) {
+		p := newStrictPool(t)
+		res := mustQuery(t, p, "SELECT * FROM users ORDER BY id")
+		if res.Rows[0]["phone"] != maskedValue {
+			t.Errorf("phone = %#v, want %q", res.Rows[0]["phone"], maskedValue)
+		}
+		if res.Rows[0]["name"] != "Andi Wijaya" {
+			t.Errorf("name = %#v, want the real value (not a masking rule)", res.Rows[0]["name"])
+		}
+	})
+
+	t.Run("unverifiable query is refused before running", func(t *testing.T) {
+		p := newStrictPool(t)
+		_, err := query(t, p, "SELECT * FROM (SELECT phone FROM users) t")
+		if err == nil {
+			t.Fatal("query succeeded, want a refusal")
+		}
+		if !strings.Contains(err.Error(), "SELECT *") {
+			t.Errorf("error = %q, want it to name the SELECT * problem", err)
+		}
+		// The pool is untouched by a refused query and still serves reads.
+		if res := mustQuery(t, p, "SELECT COUNT(*) AS n FROM users"); asNumber(t, res.Rows[0]["n"]) != 3 {
+			t.Errorf("follow-up count = %v, want 3", res.Rows[0]["n"])
+		}
+	})
+
+	t.Run("unparseable query is refused", func(t *testing.T) {
+		p := newStrictPool(t)
+		if _, err := query(t, p, "SELECT * FRM users"); err == nil {
+			t.Fatal("garbage query succeeded, want a refusal")
+		}
+	})
+}
+
 func TestPoolDialFailure(t *testing.T) {
 	p := newTestPool(t, func(cfg *Config) { cfg.Database.Password = "definitely-not-the-password" })
 

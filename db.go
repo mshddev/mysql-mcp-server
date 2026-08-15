@@ -167,6 +167,16 @@ func (p *Pool) killQuery(connID uint32) {
 // Query runs one statement and streams the resultset, truncating at the row
 // or byte cap. The context deadline is enforced with a server-side KILL.
 func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
+	// Strict masking reads the query up front so an unverifiable one is refused
+	// before it ever touches the database.
+	var plan *queryPlan
+	if p.masker != nil && p.masker.strict {
+		var perr error
+		if plan, perr = p.masker.planQuery(sql); perr != nil {
+			return nil, perr
+		}
+	}
+
 	conn, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -222,7 +232,15 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 			res.Columns = columnLabels(fields)
 			masked = make([]bool, len(fields))
 			for i, f := range fields {
-				if p.masker.Masked(f.OrgTable, f.OrgName) {
+				var mk bool
+				if plan != nil && !plan.useWire {
+					// Strict decision by position; a length mismatch (the parse
+					// and the resultset disagreeing) fails closed.
+					mk = i >= len(plan.mask) || plan.mask[i]
+				} else {
+					mk = p.masker.Masked(f.OrgTable, f.OrgName)
+				}
+				if mk {
 					masked[i] = true
 					res.MaskedColumns = append(res.MaskedColumns, res.Columns[i])
 				}

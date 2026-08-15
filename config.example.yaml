@@ -24,10 +24,16 @@ limits:
 # entry ("phone") matches that column name in every table; a qualified one
 # ("users.address") matches only there. "except" carves false positives back
 # out and beats "mask". Omit the whole section to run without masking; set
-# enabled: false to keep the rules but switch masking off. Computed columns
-# (COUNT(*), CONCAT(...)) have no origin and always pass through.
+# enabled: false to keep the rules but switch masking off.
+#
+# strict: false (the default) trusts the wire tag — derived tables, CTEs,
+# UNIONs, and computed columns (CONCAT, GROUP_CONCAT, ...) slip through. Set
+# strict: true to read the query and trace each column to its source, masking
+# those cases too and refusing queries it can't verify (e.g. a SELECT * inside
+# a sub-query). Recommended wherever the data is real; leave it off in dev.
 masking:
   enabled: true
+  strict: true
   mask:
     - phone
     - "*_phone"

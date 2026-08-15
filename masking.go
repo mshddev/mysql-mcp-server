@@ -22,6 +22,8 @@ type maskRule struct {
 type Masker struct {
 	mask   []maskRule
 	except []maskRule
+	// strict enables the query-parsing enforcement path (see strictmask.go).
+	strict bool
 }
 
 // NewMasker parses the masking config into a Masker, or nil when the section
@@ -42,12 +44,15 @@ func NewMasker(mc *MaskingConfig) (*Masker, error) {
 	// An omitted enabled flag means true: whoever wrote rules wants them
 	// active, and defaulting the other way would disable masking silently.
 	if mc.Enabled != nil && !*mc.Enabled {
+		if mc.Strict {
+			return nil, fmt.Errorf("masking.strict requires masking enabled")
+		}
 		return nil, nil
 	}
 	if len(mask) == 0 {
 		return nil, fmt.Errorf("masking is enabled but masking.mask has no rules; set masking.enabled: false to opt out")
 	}
-	return &Masker{mask: mask, except: except}, nil
+	return &Masker{mask: mask, except: except, strict: mc.Strict}, nil
 }
 
 func parseRules(list string, entries []string) ([]maskRule, error) {
