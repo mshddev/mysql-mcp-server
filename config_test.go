@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,92 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.Limits.MaxConnections != 10 {
 		t.Errorf("MaxConnections = %d, want 10", cfg.Limits.MaxConnections)
+	}
+	if cfg.Logging.Output != "stdout" {
+		t.Errorf("Logging.Output = %q, want stdout", cfg.Logging.Output)
+	}
+	if cfg.Logging.Level != "info" || cfg.logLevel != slog.LevelInfo {
+		t.Errorf("Logging.Level = %q (parsed %v), want info", cfg.Logging.Level, cfg.logLevel)
+	}
+	if cfg.Logging.Rotation.MaxSizeMB != 100 {
+		t.Errorf("Logging.Rotation.MaxSizeMB = %d, want 100", cfg.Logging.Rotation.MaxSizeMB)
+	}
+}
+
+func TestLoadConfigLogging(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantLevel slog.Level
+		wantErr   string
+	}{
+		{
+			name: "file output with rotation",
+			body: validConfig + `
+logging:
+  output: file
+  file: /var/log/mcp/server.log
+  level: warn
+  rotation:
+    max_size_mb: 10
+    max_backups: 3
+    max_age_days: 7
+    compress: true
+`,
+			wantLevel: slog.LevelWarn,
+		},
+		{
+			// Level names are case-insensitive, like slog itself accepts.
+			name:      "uppercase level",
+			body:      validConfig + "logging:\n  level: DEBUG\n",
+			wantLevel: slog.LevelDebug,
+		},
+		{
+			name:    "file output without a path",
+			body:    validConfig + "logging:\n  output: file\n",
+			wantErr: "logging.file is required",
+		},
+		{
+			name:    "unknown output",
+			body:    validConfig + "logging:\n  output: syslog\n",
+			wantErr: "logging.output",
+		},
+		{
+			name:    "unknown level",
+			body:    validConfig + "logging:\n  level: verbose\n",
+			wantErr: "logging.level",
+		},
+		{
+			name:    "zero max_size_mb",
+			body:    validConfig + "logging:\n  rotation:\n    max_size_mb: 0\n",
+			wantErr: "logging.rotation",
+		},
+		{
+			name:    "negative max_backups",
+			body:    validConfig + "logging:\n  rotation:\n    max_backups: -1\n",
+			wantErr: "logging.rotation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not mention %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.logLevel != tt.wantLevel {
+				t.Errorf("logLevel = %v, want %v", cfg.logLevel, tt.wantLevel)
+			}
+		})
 	}
 }
 
@@ -127,6 +214,7 @@ func TestLoadConfigExpandsEveryField(t *testing.T) {
 	t.Setenv("MCP_TEST_USER", "reader")
 	t.Setenv("MCP_TEST_PASSWORD", "pw:1")
 	t.Setenv("MCP_TEST_DATABASE", "shop")
+	t.Setenv("MCP_TEST_LOG_DIR", "/var/log/mcp")
 
 	cfg, err := LoadConfig(writeConfig(t, `
 server:
@@ -137,6 +225,9 @@ database:
   username: ${MCP_TEST_USER}
   password: ${MCP_TEST_PASSWORD}
   dbname: ${MCP_TEST_DATABASE}
+logging:
+  output: file
+  file: ${MCP_TEST_LOG_DIR}/server.log
 `))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -145,8 +236,10 @@ database:
 	got := []string{
 		cfg.Server.Listen, cfg.Server.AuthToken, cfg.Database.Host,
 		cfg.Database.Username, cfg.Database.Password, cfg.Database.DBName,
+		cfg.Logging.File,
 	}
-	want := []string{"0.0.0.0:1234", "tok#en", "db.internal", "reader", "pw:1", "shop"}
+	want := []string{"0.0.0.0:1234", "tok#en", "db.internal", "reader", "pw:1", "shop",
+		"/var/log/mcp/server.log"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("field %d = %q, want %q", i, got[i], want[i])

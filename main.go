@@ -32,6 +32,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	logger, err = newLogger(cfg)
+	if err != nil {
+		slog.Error("startup", "error", err.Error())
+		os.Exit(1)
+	}
+	// db.go logs through the package-level default, so it must follow the swap.
+	slog.SetDefault(logger)
+
 	pool := NewPool(cfg)
 	// Fail fast if the database is unreachable or the session setup is rejected.
 	probeCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)

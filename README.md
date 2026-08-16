@@ -49,7 +49,8 @@ Read-only is enforced by the database, not by parsing your SQL.
     - **stored functions** that return personal data from inside their body;
     - **MariaDB-only syntax** the (MySQL-dialect) parser can't read is refused in
       strict mode rather than run;
-    - query text in the server log is not scrubbed.
+    - query text in the server log is not scrubbed — and with file logging it
+      persists on disk, so protect log files like the data they describe.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
   in and stop once the cap is hit; the response says so and hints to narrow the
   query. The raw HTTP body is roughly double the cap, because MCP encodes tool
@@ -117,6 +118,10 @@ limits:
   max_response_bytes: 512000
   max_connections: 10
 
+logging:
+  output: stdout        # or "file" with a `file:` path and optional `rotation:`
+  level: info
+
 masking:                # optional; omit the section to run without masking
   enabled: true
   mask: [phone, "*_phone", email, name, address]
@@ -133,6 +138,10 @@ masking:                # optional; omit the section to run without masking
 | `limits.timeout_seconds` | Per-query timeout before a server-side kill. |
 | `limits.max_response_bytes` | Result-size cap before truncation. |
 | `limits.max_connections` | Pool size, doubling as the concurrency ceiling. |
+| `logging.output` | `stdout` (default) or `file`. |
+| `logging.file` | Log file path; required with `output: file`. Supports `${VAR}`. |
+| `logging.level` | `debug`, `info` (default), `warn`, or `error`. |
+| `logging.rotation` | For file output: `max_size_mb` (rotate at this size, default 100), `max_backups` / `max_age_days` (0 = keep everything, the default), `compress`. |
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
 | `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
 | `masking.except` | Carve-outs for false positives; beats `mask`. |
@@ -154,8 +163,11 @@ export MYSQL_PASSWORD=...     # password of the read-only DB user
 ./mysql-mcp-server --config ./config.yaml
 ```
 
-Logs are one JSON line per query on stdout — time, SQL, duration, truncated
-flag, error if any. Results are never logged.
+Logs are one JSON line per query — time, SQL, duration, truncated flag, error
+if any. Results are never logged. They go to stdout by default; `logging.output:
+file` writes them to a log file instead, rotated by size with configurable
+retention (see `config.example.yaml`). A log file that can't be created or
+written fails startup rather than running silent.
 
 ## Connect a Client (Claude Code)
 

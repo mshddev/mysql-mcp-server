@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -24,11 +25,24 @@ type Config struct {
 		MaxResponseBytes int `yaml:"max_response_bytes"`
 		MaxConnections   int `yaml:"max_connections"`
 	} `yaml:"limits"`
+	Logging struct {
+		Output   string `yaml:"output"`
+		File     string `yaml:"file"`
+		Level    string `yaml:"level"`
+		Rotation struct {
+			MaxSizeMB  int  `yaml:"max_size_mb"`
+			MaxBackups int  `yaml:"max_backups"`
+			MaxAgeDays int  `yaml:"max_age_days"`
+			Compress   bool `yaml:"compress"`
+		} `yaml:"rotation"`
+	} `yaml:"logging"`
 	// Masking is opt-in per deployment: an absent section means off.
 	Masking *MaskingConfig `yaml:"masking"`
 
 	// masker is derived from Masking at load time; nil when masking is off.
 	masker *Masker
+	// logLevel is derived from Logging.Level at load time.
+	logLevel slog.Level
 }
 
 type MaskingConfig struct {
@@ -58,6 +72,9 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Limits.TimeoutSeconds = 30
 	cfg.Limits.MaxResponseBytes = 500 << 10
 	cfg.Limits.MaxConnections = 10
+	cfg.Logging.Output = "stdout"
+	cfg.Logging.Level = "info"
+	cfg.Logging.Rotation.MaxSizeMB = 100
 
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -68,6 +85,7 @@ func LoadConfig(path string) (*Config, error) {
 		&cfg.Server.Listen, &cfg.Server.AuthToken,
 		&cfg.Database.Host, &cfg.Database.Username,
 		&cfg.Database.Password, &cfg.Database.DBName,
+		&cfg.Logging.File,
 	} {
 		*f = os.Expand(*f, func(key string) string {
 			val, ok := os.LookupEnv(key)
@@ -90,6 +108,22 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Limits.TimeoutSeconds < 1 || cfg.Limits.MaxConnections < 1 || cfg.Limits.MaxResponseBytes < 1 {
 		return nil, fmt.Errorf("limits must all be at least 1 (timeout_seconds=%d, max_connections=%d, max_response_bytes=%d)",
 			cfg.Limits.TimeoutSeconds, cfg.Limits.MaxConnections, cfg.Limits.MaxResponseBytes)
+	}
+	switch cfg.Logging.Output {
+	case "stdout":
+	case "file":
+		if cfg.Logging.File == "" {
+			return nil, fmt.Errorf(`logging.file is required when logging.output is "file"`)
+		}
+	default:
+		return nil, fmt.Errorf(`logging.output must be "stdout" or "file", got %q`, cfg.Logging.Output)
+	}
+	if err := cfg.logLevel.UnmarshalText([]byte(cfg.Logging.Level)); err != nil {
+		return nil, fmt.Errorf("logging.level must be debug, info, warn or error, got %q", cfg.Logging.Level)
+	}
+	if r := cfg.Logging.Rotation; r.MaxSizeMB < 1 || r.MaxBackups < 0 || r.MaxAgeDays < 0 {
+		return nil, fmt.Errorf("logging.rotation needs max_size_mb of at least 1 and no negative values (max_size_mb=%d, max_backups=%d, max_age_days=%d)",
+			r.MaxSizeMB, r.MaxBackups, r.MaxAgeDays)
 	}
 	if cfg.masker, err = NewMasker(cfg.Masking); err != nil {
 		return nil, err

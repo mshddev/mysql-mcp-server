@@ -6,6 +6,7 @@ require (
 	github.com/go-mysql-org/go-mysql v1.16.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pingcap/tidb/pkg/parser v0.0.0-20260504140133-511dba1dbe17
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -29,5 +30,4 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
