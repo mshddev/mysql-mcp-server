@@ -37,6 +37,22 @@ type QueryResult struct {
 	MaskedColumns []string `json:"masked_columns,omitempty"`
 	Truncated     bool     `json:"truncated"`
 	Note          string   `json:"note,omitempty"`
+	// AffectedRows and LastInsertID report the outcome of a statement that
+	// returned no resultset (INSERT/UPDATE/DELETE/DDL under full_access).
+	// AffectedRows is present even at 0 — "matched nothing" is real
+	// information — and values past 2^53 become strings, like any other
+	// integer in the result.
+	AffectedRows any `json:"affected_rows,omitempty"`
+	LastInsertID any `json:"last_insert_id,omitempty"`
+}
+
+// jsonSafeUint keeps a count inside the float64-exact range the SDK
+// round-trips through; past it the value goes out as a string.
+func jsonSafeUint(n uint64) any {
+	if n > maxSafeInteger {
+		return strconv.FormatUint(n, 10)
+	}
+	return n
 }
 
 type Pool struct {
@@ -85,13 +101,17 @@ func (p *Pool) dial(ctx context.Context) (*client.Conn, error) {
 	return conn, nil
 }
 
-// setupSession hardens every pooled connection: read-only transactions plus a
-// server-side statement timeout as backup for the client-side kill. MariaDB
-// and MySQL spell the timeout variable differently.
+// setupSession hardens every pooled connection: read-only transactions
+// (read_only mode) plus a server-side statement timeout as backup for the
+// client-side kill. MariaDB and MySQL spell the timeout variable differently,
+// and their scope differs too: MariaDB's max_statement_time covers every
+// statement except stored procedures, while MySQL's MAX_EXECUTION_TIME covers
+// only SELECTs — so under full_access on MySQL, a long write outlives it and
+// the client-side KILL is the sole stopper.
 func (p *Pool) setupSession(conn *client.Conn) error {
-	stmts := []string{
-		"SET NAMES utf8mb4",
-		"SET SESSION TRANSACTION READ ONLY",
+	stmts := []string{"SET NAMES utf8mb4"}
+	if !p.cfg.fullAccess() {
+		stmts = append(stmts, "SET SESSION TRANSACTION READ ONLY")
 	}
 	timeout := p.cfg.Limits.TimeoutSeconds
 	if strings.Contains(strings.ToLower(conn.GetServerVersion()), "mariadb") {
@@ -253,11 +273,18 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	switch {
 	case err == nil:
 		// A statement answered with an OK packet instead of a resultset (SET,
-		// USE, DO, ...) may have changed session state — read-only mode, the
-		// statement timeout, the default schema — so it must never be handed
-		// to the next caller. Also discard if a kill fired after completion
-		// (deadline lost the race), since the KILL may still land.
+		// USE, DO, and every write under full_access) may have changed session
+		// state — read-only mode, the statement timeout, the default schema —
+		// so it must never be handed to the next caller. Also discard if a
+		// kill fired after completion (deadline lost the race), since the KILL
+		// may still land.
 		p.release(conn, killed.Load() || fields == nil)
+		if fields == nil {
+			res.AffectedRows = jsonSafeUint(streamResult.AffectedRows)
+			if streamResult.InsertId != 0 {
+				res.LastInsertID = jsonSafeUint(streamResult.InsertId)
+			}
+		}
 	case errors.Is(err, errTruncated):
 		// Mid-stream abort leaves unread packets; drop the connection.
 		p.release(conn, true)

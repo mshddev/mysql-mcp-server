@@ -862,6 +862,87 @@ func TestQueryRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestFullAccessSessionSetup(t *testing.T) {
+	p := newTestPool(t, func(cfg *Config) { cfg.Mode = modeFullAccess })
+
+	res := mustQuery(t, p, "SELECT @@session.tx_read_only AS ro")
+	if ro := asNumber(t, res.Rows[0]["ro"]); ro != 0 {
+		t.Errorf("tx_read_only = %v, want 0 in full_access mode", ro)
+	}
+}
+
+// full_access drops the app-level guard, so the grants become the boundary:
+// the read-only user's INSERT must fail with a privilege error, not the
+// read-only-transaction error.
+func TestFullAccessWriteDeniedByGrants(t *testing.T) {
+	p := newTestPool(t, func(cfg *Config) { cfg.Mode = modeFullAccess })
+
+	_, err := query(t, p, "INSERT INTO users (name) VALUES ('should not happen')")
+	if err == nil {
+		t.Fatal("INSERT as the read-only user succeeded, want a privilege error")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("error = %q, want a privilege (command denied) error", err)
+	}
+}
+
+// newWriteTestPool builds a full_access pool connecting as the seeded
+// full-access user, skipping if that user is missing.
+func newWriteTestPool(t *testing.T) *Pool {
+	t.Helper()
+	p := newTestPool(t, func(cfg *Config) {
+		cfg.Mode = modeFullAccess
+		cfg.Database.Username = envOr("MYSQL_TEST_WRITE_USER", "mcp_write")
+		cfg.Database.Password = envOr("MYSQL_TEST_WRITE_PASSWORD", "devpassword")
+	})
+	if _, err := query(t, p, "SELECT 1"); err != nil {
+		t.Skipf("full-access user unavailable — re-seed with seed/seed.sql: %v", err)
+	}
+	return p
+}
+
+func TestFullAccessWriteRoundTrip(t *testing.T) {
+	p := newWriteTestPool(t)
+
+	mustQuery(t, p, "DROP TABLE IF EXISTS mcp_write_test")
+	mustQuery(t, p, "CREATE TABLE mcp_write_test (id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(20))")
+	t.Cleanup(func() { _, _ = query(t, p, "DROP TABLE IF EXISTS mcp_write_test") })
+
+	ins := mustQuery(t, p, "INSERT INTO mcp_write_test (v) VALUES ('a'), ('b')")
+	if ins.AffectedRows != uint64(2) {
+		t.Errorf("INSERT affected_rows = %v, want 2", ins.AffectedRows)
+	}
+	if ins.LastInsertID == nil {
+		t.Error("INSERT last_insert_id missing, want the new id")
+	}
+
+	upd := mustQuery(t, p, "UPDATE mcp_write_test SET v = 'c' WHERE v = 'a'")
+	if upd.AffectedRows != uint64(1) {
+		t.Errorf("UPDATE affected_rows = %v, want 1", upd.AffectedRows)
+	}
+
+	// A write that matches nothing still reports affected_rows: 0 — the field
+	// must be present, not omitted.
+	noop := mustQuery(t, p, "UPDATE mcp_write_test SET v = 'z' WHERE v = 'nope'")
+	if noop.AffectedRows != uint64(0) {
+		t.Errorf("no-op UPDATE affected_rows = %v, want 0", noop.AffectedRows)
+	}
+
+	// Every OK-packet statement still discards its connection (state safety
+	// beats reuse), and reads keep flowing afterwards without write metadata.
+	if idle := len(p.idle); idle != 0 {
+		t.Errorf("%d connection(s) pooled after a write, want 0", idle)
+	}
+	sel := mustQuery(t, p, "SELECT COUNT(*) AS n FROM mcp_write_test")
+	if asNumber(t, sel.Rows[0]["n"]) != 2 {
+		t.Errorf("count = %v, want 2", sel.Rows[0]["n"])
+	}
+	if sel.AffectedRows != nil || sel.LastInsertID != nil {
+		t.Errorf("SELECT reported affected_rows = %v, last_insert_id = %v, want both absent",
+			sel.AffectedRows, sel.LastInsertID)
+	}
+}
+
 func TestQueryError(t *testing.T) {
 	p := newTestPool(t, nil)
 

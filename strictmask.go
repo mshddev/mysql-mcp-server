@@ -48,6 +48,12 @@ func refusef(format string, args ...any) error {
 func (m *Masker) planQuery(sql string) (*queryPlan, error) {
 	stmt, err := parseOne(sql)
 	if err != nil {
+		if m.bestEffort {
+			// Unparseable is unclassifiable — it may be valid MariaDB syntax
+			// the parser's MySQL grammar rejects. Best effort runs it with
+			// wire-tag masking rather than blocking staging work.
+			return &queryPlan{useWire: true}, nil
+		}
 		return nil, refusef("could not parse it to verify masking — list columns explicitly or simplify it (%v)", err)
 	}
 	switch s := stmt.(type) {
@@ -69,6 +75,11 @@ func (m *Masker) planQuery(sql string) (*queryPlan, error) {
 	case *ast.SetOprStmt:
 		return (&tracer{m: m}).plan(s)
 	default:
+		if m.bestEffort {
+			// Writes and DDL pass unchecked by design (full_access); any rows
+			// they do return get wire-tag masking.
+			return &queryPlan{useWire: true}, nil
+		}
 		return nil, refusef("only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed (got %T)", stmt)
 	}
 }

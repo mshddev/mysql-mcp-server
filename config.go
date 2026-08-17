@@ -8,7 +8,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// The two server modes. Read-only is the default and the zero value, so a
+// config that never mentions mode — or code that builds a Config directly —
+// fails safe.
+const (
+	modeReadOnly   = "read_only"
+	modeFullAccess = "full_access"
+)
+
 type Config struct {
+	// Mode gates what the server itself lets through: read_only keeps the
+	// session-level write block on every connection, full_access drops it so
+	// the MySQL user's grants become the only boundary.
+	Mode   string `yaml:"mode"`
 	Server struct {
 		Listen    string `yaml:"listen"`
 		AuthToken string `yaml:"auth_token"`
@@ -51,6 +63,10 @@ type MaskingConfig struct {
 	Enabled *bool    `yaml:"enabled"`
 	Mask    []string `yaml:"mask"`
 	Except  []string `yaml:"except"`
+	// BestEffort acknowledges that under full_access, masking is a seatbelt
+	// rather than a guarantee: a write can copy PII into tables the rules
+	// don't name. Running masking in full_access mode requires it.
+	BestEffort bool `yaml:"best_effort"`
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
@@ -63,6 +79,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
+	cfg.Mode = modeReadOnly
 	cfg.Server.Listen = "127.0.0.1:3000"
 	cfg.Database.Port = 3306
 	cfg.Limits.TimeoutSeconds = 30
@@ -95,6 +112,11 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config references unset environment variables: %v", missing)
 	}
 
+	switch cfg.Mode {
+	case modeReadOnly, modeFullAccess:
+	default:
+		return nil, fmt.Errorf("mode must be %q or %q, got %q", modeReadOnly, modeFullAccess, cfg.Mode)
+	}
 	if cfg.Server.AuthToken == "" {
 		return nil, fmt.Errorf("server.auth_token must not be empty")
 	}
@@ -124,5 +146,15 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.masker, err = NewMasker(cfg.Masking); err != nil {
 		return nil, err
 	}
+	if cfg.masker != nil && cfg.fullAccess() {
+		if !cfg.Masking.BestEffort {
+			return nil, fmt.Errorf("masking under full_access is best-effort, not a guarantee: " +
+				"a write can copy PII into tables the rules don't name; " +
+				"set masking.best_effort: true to acknowledge that, or disable masking")
+		}
+		cfg.masker.bestEffort = true
+	}
 	return cfg, nil
 }
+
+func (c *Config) fullAccess() bool { return c.Mode == modeFullAccess }

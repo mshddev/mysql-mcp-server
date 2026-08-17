@@ -23,6 +23,17 @@ as the code. A few things to get right:
   the database's grants first, and by `SET SESSION TRANSACTION READ ONLY` second.
   A user with wider grants widens the blast radius — point the server at a
   read-only replica where you can.
+- **Treat `mode: full_access` as what it says.** It removes the server's own
+  write block, leaving the MySQL user's grants as the *only* boundary — and an
+  agent's writes run with no approval step. Use it only for disposable
+  environments (staging) whose data you can restore, with a user scoped to
+  exactly that schema, and never for production. If you run PII masking there,
+  know its ceiling: it keeps personal data out of an agent's context by
+  accident, but a caller with write access can copy data past the rules —
+  which is why the config makes you acknowledge that with `best_effort: true`.
+  (Masking is best-effort everywhere, in truth: even read-only, values can be
+  probed through `WHERE` conditions. Sanitize the data itself when you need a
+  guarantee.)
 - **Bind to loopback unless you mean to expose it.** `listen: 127.0.0.1:3000` by
   default; only widen it behind something you trust.
 - **Use a strong, unique bearer token,** and rotate it if it leaks. It's the

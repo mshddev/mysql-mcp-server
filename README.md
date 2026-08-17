@@ -1,22 +1,31 @@
 # mysql-mcp-server
 
-> Read-only SQL access to MySQL/MariaDB for AI agents, over MCP.
+> SQL access to MySQL/MariaDB for AI agents over MCP — read-only by default,
+> full access as an explicit opt-in.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](go.mod)
 
-An MCP server that gives an AI agent a safe, read-only window into a MySQL or
-MariaDB database. It exposes a single tool — `query` — over streamable HTTP
+An MCP server that gives an AI agent a window into a MySQL or MariaDB
+database. It exposes a single tool — `query` — over streamable HTTP
 (MCP spec 2026-07-28, stateless), runs the SQL you send, and returns rows as
 JSON objects.
 
 The point is to let a coding agent (Claude Code, or anything that speaks MCP)
 answer real data questions and explore a schema — without the risk of it
-writing, dropping a table, or dragging a whole dataset across the wire.
-Read-only is enforced by the database, not by parsing your SQL.
+writing, dropping a table, or dragging a whole dataset across the wire. In the
+default `read_only` mode that safety is enforced by the database, not by
+parsing your SQL. For disposable environments like staging, `mode: full_access`
+drops the server-side write block and lets the MySQL user's grants decide what
+the agent may do — writes included.
 
 ## Safety Model
 
+- **Two modes, chosen per deployment.** `read_only` (the default, and what the
+  rest of this list assumes) blocks all writes at the session level;
+  `full_access` removes that block for environments where agent writes are
+  wanted — there the user's grants are the only fence, so scope them
+  deliberately and point production at `read_only` always.
 - **Read-only, enforced by the database** — connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`. The SQL
   text is never inspected — grants are the fence.
@@ -43,6 +52,10 @@ Read-only is enforced by the database, not by parsing your SQL.
     - **stored functions** that return personal data from inside their body;
     - **MariaDB-only syntax** the (MySQL-dialect) parser can't read is refused
       rather than run;
+    - under **`full_access`**, masking degrades further — a write can copy
+      personal data into tables the rules don't name, and writes, DDL, and
+      unparseable statements run with wire-metadata masking only — so the
+      config demands an explicit `best_effort: true` acknowledgment there;
     - query text in the server log is not scrubbed — and with file logging it
       persists on disk, so protect log files like the data they describe.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
@@ -52,6 +65,9 @@ Read-only is enforced by the database, not by parsing your SQL.
 - **Timeout** (default 30s) — the query is killed server-side with a
   `KILL QUERY` from a separate connection, with the engine's own statement
   timeout as backup (MariaDB `max_statement_time` / MySQL `max_execution_time`).
+  One asymmetry: MySQL's variable only covers `SELECT`s, so under `full_access`
+  on MySQL a long-running write is stopped by the `KILL` alone; MariaDB's
+  covers every statement except stored procedures.
 - **Connection pool** (default 10) — doubles as the concurrency brake.
 - **Bearer token** — checked on every request, compared in constant time.
 
@@ -59,8 +75,9 @@ Read-only is enforced by the database, not by parsing your SQL.
 
 - Go 1.26 or newer
 - A reachable MySQL or MariaDB
-- A `SELECT`-only database user — see [Local Development](#local-development) for
-  a seed you can copy
+- A `SELECT`-only database user (or, for `full_access`, a user whose grants say
+  exactly what the agent may do) — see [Local Development](#local-development)
+  for a seed you can copy
 
 ## Install
 
@@ -96,6 +113,8 @@ cp config.example.yaml config.yaml
 `${VAR}` placeholders, so nothing sensitive lands in the file:
 
 ```yaml
+mode: read_only                # or full_access: writes allowed, grants are the fence
+
 server:
   listen: "127.0.0.1:3000"     # loopback by default; ":3000" exposes on all interfaces
   auth_token: ${MCP_AUTH_TOKEN}
@@ -124,6 +143,7 @@ masking:                # optional; omit the section to run without masking
 
 | Key | Meaning |
 |---|---|
+| `mode` | `read_only` (default) or `full_access`. See [Safety Model](#safety-model). |
 | `server.listen` | Address to bind. Loopback by default. |
 | `server.auth_token` | Bearer token clients must present. |
 | `database.host` / `port` | Where the database lives. |
@@ -139,6 +159,7 @@ masking:                # optional; omit the section to run without masking
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
 | `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
 | `masking.except` | Carve-outs for false positives; beats `mask`. |
+| `masking.best_effort` | Required `true` to run masking under `full_access`, acknowledging it is a seatbelt there, not a guarantee. |
 
 `config.example.yaml` ships a starter `mask` list to trim, not a blank page —
 forgetting a column is the failure mode. A `masking` section that is enabled
@@ -152,7 +173,7 @@ unset.
 
 ```bash
 export MCP_AUTH_TOKEN=...     # token clients must present
-export MYSQL_PASSWORD=...     # password of the read-only DB user
+export MYSQL_PASSWORD=...     # password of the DB user
 ./mysql-mcp-server --config ./config.yaml
 ```
 
@@ -221,11 +242,17 @@ A few rules worth knowing:
   otherwise corrupt them.
 - MySQL errors pass through verbatim, so the agent can read them and
   self-correct.
+- Under `full_access`, a statement that returns no rows (INSERT/UPDATE/DELETE/
+  DDL) reports `affected_rows` — present even at 0 — and `last_insert_id` when
+  there is one. Each call is one statement with autocommit: no semicolon
+  batches, no transactions spanning calls, and session state (`SET ...`) does
+  not persist between calls.
 
 ## Local Development
 
-Seed a throwaway database — a couple of tables, fake rows, and a `SELECT`-only
-user — into a local MySQL/MariaDB:
+Seed a throwaway database — a couple of tables, fake rows, a `SELECT`-only
+user (`mcp_readonly`), and a full-access user (`mcp_write`) for exercising
+`full_access` mode — into a local MySQL/MariaDB:
 
 ```bash
 mysql -h 127.0.0.1 -u root < seed/seed.sql

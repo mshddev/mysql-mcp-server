@@ -65,4 +65,13 @@ ALTER USER 'mcp_readonly'@'%' IDENTIFIED BY 'devpassword';
 ALTER USER 'mcp_readonly'@'localhost' IDENTIFIED BY 'devpassword';
 GRANT SELECT ON mcp_dev.* TO 'mcp_readonly'@'%';
 GRANT SELECT ON mcp_dev.* TO 'mcp_readonly'@'localhost';
+
+-- Full-access user for exercising full_access mode; grants scoped to this one
+-- schema are the boundary there, mirroring how a staging deployment is set up.
+CREATE USER IF NOT EXISTS 'mcp_write'@'%' IDENTIFIED BY 'devpassword';
+CREATE USER IF NOT EXISTS 'mcp_write'@'localhost' IDENTIFIED BY 'devpassword';
+ALTER USER 'mcp_write'@'%' IDENTIFIED BY 'devpassword';
+ALTER USER 'mcp_write'@'localhost' IDENTIFIED BY 'devpassword';
+GRANT ALL PRIVILEGES ON mcp_dev.* TO 'mcp_write'@'%';
+GRANT ALL PRIVILEGES ON mcp_dev.* TO 'mcp_write'@'localhost';
 FLUSH PRIVILEGES;

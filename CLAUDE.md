@@ -15,5 +15,8 @@ MCP_AUTH_TOKEN=... MYSQL_PASSWORD=... ./mysql-mcp-server --config ./config.yaml
 
 Integration tests need a database seeded with `seed/seed.sql`; connection
 defaults (`mcp_readonly` / `devpassword` / `mcp_dev`) can be overridden with
-`MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD`, `MYSQL_TEST_DATABASE`. Local dev is
+`MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD`, `MYSQL_TEST_DATABASE`. The
+full_access write tests use the seeded `mcp_write` / `devpassword` user
+(override with `MYSQL_TEST_WRITE_USER` / `MYSQL_TEST_WRITE_PASSWORD`) and
+self-skip when it's missing. Local dev is
 often MariaDB, which the tests and code both accommodate.

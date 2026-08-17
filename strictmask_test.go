@@ -70,30 +70,71 @@ func TestPlanQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plan, err := m.planQuery(tt.sql)
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("planQuery(%q) succeeded, want a refusal mentioning %q", tt.sql, tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("refusal %q does not mention %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("planQuery(%q): %v", tt.sql, err)
-			}
-			if tt.wire {
-				if !plan.useWire {
-					t.Errorf("useWire = false, want true (mask=%v)", plan.mask)
-				}
-				return
-			}
-			if plan.useWire {
-				t.Fatalf("useWire = true, want the query traced")
-			}
-			if !slices.Equal(plan.mask, tt.wantMask) {
-				t.Errorf("mask = %v, want %v", plan.mask, tt.wantMask)
-			}
+			checkPlan(t, tt.sql, plan, err, tt.wantErr, tt.wire, tt.wantMask)
 		})
+	}
+}
+
+// Best effort (full_access mode): statements strict masking refuses — writes,
+// DDL, anything unparseable — pass with wire-tag masking, while parseable
+// reads keep the full strict treatment.
+func TestPlanQueryBestEffort(t *testing.T) {
+	m := maskerForTest(t, []string{"phone", "*_phone", "email", "users.address"}, nil)
+	m.bestEffort = true
+
+	tests := []struct {
+		name     string
+		sql      string
+		wantErr  string
+		wire     bool
+		wantMask []bool
+	}{
+		{name: "insert passes", sql: "INSERT INTO users (name) VALUES ('x')", wire: true},
+		{name: "update passes", sql: "UPDATE users SET name = 'x' WHERE id = 1", wire: true},
+		{name: "delete passes", sql: "DELETE FROM users WHERE id = 1", wire: true},
+		{name: "ddl passes", sql: "CREATE TABLE scratch (id INT)", wire: true},
+		{name: "drop passes", sql: "DROP TABLE scratch", wire: true},
+		// Unclassifiable: may be dialect syntax the parser's grammar lacks.
+		{name: "unparseable passes", sql: "SELECT * FRM users", wire: true},
+
+		// Reads stay strict, refusals included.
+		{name: "derived alias is still traced", sql: "SELECT x FROM (SELECT phone AS x FROM users) t", wantMask: []bool{true}},
+		{name: "star over a derived table is still refused", sql: "SELECT * FROM (SELECT phone FROM users) t", wantErr: "SELECT *"},
+		{name: "table form is still refused", sql: "TABLE users", wantErr: "TABLE or VALUES"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := m.planQuery(tt.sql)
+			checkPlan(t, tt.sql, plan, err, tt.wantErr, tt.wire, tt.wantMask)
+		})
+	}
+}
+
+func checkPlan(t *testing.T, sql string, plan *queryPlan, err error, wantErr string, wire bool, wantMask []bool) {
+	t.Helper()
+	if wantErr != "" {
+		if err == nil {
+			t.Fatalf("planQuery(%q) succeeded, want a refusal mentioning %q", sql, wantErr)
+		}
+		if !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("refusal %q does not mention %q", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("planQuery(%q): %v", sql, err)
+	}
+	if wire {
+		if !plan.useWire {
+			t.Errorf("useWire = false, want true (mask=%v)", plan.mask)
+		}
+		return
+	}
+	if plan.useWire {
+		t.Fatalf("useWire = true, want the query traced")
+	}
+	if !slices.Equal(plan.mask, wantMask) {
+		t.Errorf("mask = %v, want %v", plan.mask, wantMask)
 	}
 }

@@ -1,6 +1,16 @@
 # Copy to config.yaml (gitignored) and adjust per environment.
 # The two secrets come from the environment via ${VAR} placeholders.
 # These defaults point at a local dev database seeded via seed/seed.sql.
+
+# What the server itself lets through:
+#   read_only   (default) — every connection runs SET SESSION TRANSACTION
+#               READ ONLY, so even an over-privileged user can't write
+#               through this server. Use this for production.
+#   full_access — that guard is dropped; the MySQL user's grants are the only
+#               boundary, and writes report affected_rows / last_insert_id.
+#               For disposable environments (staging) with a scoped user.
+mode: read_only
+
 server:
   # Loopback by default; use ":3000" to expose on all interfaces (e.g. team VM).
   listen: "127.0.0.1:3000"
@@ -46,6 +56,12 @@ logging:
 # (e.g. a SELECT * inside a sub-query) is refused with an error the agent can
 # act on. Columns exposed through views are the known gap — add the view's own
 # column names to the rules.
+#
+# Under full_access, masking degrades to a best-effort seatbelt: a write can
+# copy PII into tables the rules don't name, and writes, DDL, and statements
+# the parser can't read run with wire-metadata masking only (reads it can
+# parse stay strictly checked). The server refuses to start in full_access
+# with masking on unless you acknowledge that with best_effort: true.
 masking:
   enabled: true
   mask:

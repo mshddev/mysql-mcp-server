@@ -24,6 +24,10 @@ type maskRule struct {
 type Masker struct {
 	mask   []maskRule
 	except []maskRule
+	// bestEffort (full_access mode only) lets statements planQuery can't
+	// verify — writes, DDL, anything unparseable — run with wire-tag masking
+	// instead of being refused. Reads it can parse stay strictly checked.
+	bestEffort bool
 }
 
 // NewMasker parses the masking config into a Masker, or nil when the section

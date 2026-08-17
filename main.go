@@ -19,6 +19,13 @@ type QueryInput struct {
 	SQL string `json:"sql" jsonschema:"The SQL statement to execute. Read-only: only SELECT/SHOW/DESCRIBE/EXPLAIN will succeed."`
 }
 
+// FullAccessQueryInput is QueryInput with an honest schema hint for
+// full_access mode. Struct tags are fixed at compile time, so each mode needs
+// its own struct.
+type FullAccessQueryInput struct {
+	SQL string `json:"sql" jsonschema:"The SQL statement to execute. Reads and writes are both allowed; one statement per call, run with autocommit."`
+}
+
 func main() {
 	configPath := flag.String("config", "./config.yaml", "path to YAML config")
 	flag.Parse()
@@ -56,8 +63,14 @@ func main() {
 		Version: version,
 	}, nil)
 
-	description := "Run a read-only SQL query against the MySQL database and get rows back. " +
-		"Use SHOW TABLES / DESCRIBE <table> to discover the schema. " +
+	description := "Run a read-only SQL query against the MySQL database and get rows back. "
+	if cfg.fullAccess() {
+		description = "Run a SQL statement against the MySQL database. Reads return rows; " +
+			"writes (INSERT/UPDATE/DELETE/DDL) are allowed and report affected_rows and last_insert_id. " +
+			"Each call is one statement run with autocommit — semicolon batches fail, and session " +
+			"state (SET ...) does not persist between calls. "
+	}
+	description += "Use SHOW TABLES / DESCRIBE <table> to discover the schema. " +
 		"Results are capped; narrow queries with WHERE/LIMIT."
 	if cfg.masker != nil {
 		description += " Some columns come back as \"<masked>\" under this server's PII policy " +
@@ -65,18 +78,18 @@ func main() {
 			" To verify masking the server reads the query, and refuses ones it can't " +
 			"check: keep queries straightforward — a SELECT * inside a sub-query, join, or union is " +
 			"refused (list the columns instead), and computed columns built from PII are masked."
+		if cfg.fullAccess() {
+			description += " Write statements are not masking-checked."
+		}
 	}
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "query",
-		Description: description,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input QueryInput) (*mcp.CallToolResult, *QueryResult, error) {
+	run := func(ctx context.Context, sql string) (*mcp.CallToolResult, *QueryResult, error) {
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Limits.TimeoutSeconds)*time.Second)
 		defer cancel()
 
 		start := time.Now()
-		res, err := pool.Query(queryCtx, input.SQL)
+		res, err := pool.Query(queryCtx, sql)
 		attrs := []any{
-			"query", input.SQL,
+			"query", sql,
 			"duration_ms", time.Since(start).Milliseconds(),
 			"truncated", res != nil && res.Truncated,
 		}
@@ -86,7 +99,17 @@ func main() {
 		}
 		logger.Info("query", attrs...)
 		return nil, res, nil
-	})
+	}
+	tool := &mcp.Tool{Name: "query", Description: description}
+	if cfg.fullAccess() {
+		mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input FullAccessQueryInput) (*mcp.CallToolResult, *QueryResult, error) {
+			return run(ctx, input.SQL)
+		})
+	} else {
+		mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input QueryInput) (*mcp.CallToolResult, *QueryResult, error) {
+			return run(ctx, input.SQL)
+		})
+	}
 
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
@@ -94,7 +117,7 @@ func main() {
 	)
 
 	logger.Info("startup", "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "masking", cfg.masker != nil, "version", version)
+		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil, "version", version)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           bearerAuth(cfg.Server.AuthToken, handler),

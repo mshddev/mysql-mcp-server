@@ -318,6 +318,72 @@ func TestLoadConfigMasking(t *testing.T) {
 	}
 }
 
+func TestLoadConfigMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		wantFullAccess bool
+		wantBestEffort bool
+		wantErr        string
+	}{
+		{name: "absent mode is read_only", body: validConfig},
+		{name: "explicit read_only", body: validConfig + "mode: read_only\n"},
+		{name: "full_access", body: validConfig + "mode: full_access\n", wantFullAccess: true},
+		{name: "unknown mode is an error", body: validConfig + "mode: read_write\n", wantErr: "mode"},
+		{
+			// Write access defeats a mask list (a write can copy PII into
+			// tables the rules don't name), so running both takes an explicit
+			// acknowledgment.
+			name:    "full_access with masking needs best_effort",
+			body:    validConfig + "mode: full_access\nmasking:\n  mask: [phone]\n",
+			wantErr: "best_effort",
+		},
+		{
+			name:           "full_access with acknowledged masking",
+			body:           validConfig + "mode: full_access\nmasking:\n  mask: [phone]\n  best_effort: true\n",
+			wantFullAccess: true,
+			wantBestEffort: true,
+		},
+		{
+			// Disabled masking needs no acknowledgment.
+			name:           "full_access with disabled masking",
+			body:           validConfig + "mode: full_access\nmasking:\n  enabled: false\n  mask: [phone]\n",
+			wantFullAccess: true,
+		},
+		{
+			// best_effort under read_only is inert, not an error, so one
+			// config template can be flipped between environments by mode
+			// alone.
+			name: "best_effort under read_only is ignored",
+			body: validConfig + "masking:\n  mask: [phone]\n  best_effort: true\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not mention %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.fullAccess() != tt.wantFullAccess {
+				t.Errorf("fullAccess() = %v, want %v", cfg.fullAccess(), tt.wantFullAccess)
+			}
+			if gotBE := cfg.masker != nil && cfg.masker.bestEffort; gotBE != tt.wantBestEffort {
+				t.Errorf("masker best-effort = %v, want %v", gotBE, tt.wantBestEffort)
+			}
+		})
+	}
+}
+
 func TestLoadConfigErrors(t *testing.T) {
 	tests := []struct {
 		name    string
