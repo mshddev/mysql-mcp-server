@@ -943,28 +943,6 @@ func TestQueryMasking(t *testing.T) {
 	}
 }
 
-func TestQueryMaskingExpressionsPassThrough(t *testing.T) {
-	p := newTestPool(t, func(cfg *Config) {
-		cfg.masker = maskerForTest(t, []string{"phone"}, nil)
-	})
-
-	// Aggregates have no wire origin and must not be masked.
-	res := mustQuery(t, p, "SELECT COUNT(*) AS n FROM users")
-	if asNumber(t, res.Rows[0]["n"]) != 3 {
-		t.Errorf("COUNT(*) = %v, want 3", res.Rows[0]["n"])
-	}
-	if len(res.MaskedColumns) != 0 || res.Note != "" {
-		t.Errorf("MaskedColumns = %v, Note = %q, want none for an aggregate", res.MaskedColumns, res.Note)
-	}
-
-	// The accepted gap from the design: an expression severs the origin, so
-	// the raw value passes through. Pinned so a behavior change is noticed.
-	res = mustQuery(t, p, "SELECT CONCAT(phone, '') AS c FROM users WHERE id = 1")
-	if res.Rows[0]["c"] != "081234567890" {
-		t.Errorf("CONCAT(phone) = %#v, want the raw value (expressions pass through by design)", res.Rows[0]["c"])
-	}
-}
-
 // wireOrgName reports the origin name the server sends for the first column,
 // dialing directly so the test sees exactly the metadata Query sees.
 func wireOrgName(t *testing.T, p *Pool, sql string) string {
@@ -988,51 +966,34 @@ func wireOrgName(t *testing.T, p *Pool, sql string) string {
 	return string(res.Fields[0].OrgName)
 }
 
-// The invariant: a column is masked iff the origin name the server reports
-// matches the rules. What servers report for views and derived tables differs
-// (MariaDB severs the origin through a renaming view, MySQL variants may
-// not — spike 2026-08-14), so expectations are derived from the wire rather
-// than hard-coded per server.
-func TestQueryMaskingFollowsWireOrigin(t *testing.T) {
-	tests := []struct {
-		name   string
-		sql    string
-		column string
-	}{
-		{
-			name:   "derived table",
-			sql:    "SELECT * FROM (SELECT phone FROM users WHERE id = 1) t",
-			column: "phone",
-		},
-		{
-			name:   "renaming view",
-			sql:    "SELECT contact FROM user_contacts WHERE id = 1",
-			column: "contact",
-		},
-	}
-	// One rule for the base column, one for the view's renamed column: the
-	// second is the documented mitigation for renaming views.
+// The views gap: the server does not read view definitions, so a plain column
+// selected from a view takes the wire path and the outcome follows whatever
+// origin the server reports through the view. That differs per server (MariaDB
+// severs the origin through a renaming view, MySQL variants may not — spike
+// 2026-08-14), so expectations are derived from the wire rather than
+// hard-coded. The "contact" rule is the documented mitigation: name the view's
+// own column and masking holds regardless of what the wire says about origins.
+func TestQueryMaskingViewFollowsWireOrigin(t *testing.T) {
+	const sql = "SELECT contact FROM user_contacts WHERE id = 1"
 	for _, rule := range []string{"phone", "contact"} {
-		p := newTestPool(t, func(cfg *Config) {
-			cfg.masker = maskerForTest(t, []string{rule}, nil)
-		})
-		for _, tt := range tests {
-			t.Run(rule+"/"+tt.name, func(t *testing.T) {
-				orgName := wireOrgName(t, p, tt.sql)
-				wantMasked := p.masker.Masked(nil, []byte(orgName))
-
-				res := mustQuery(t, p, tt.sql)
-				got := res.Rows[0][tt.column]
-				if wantMasked && got != maskedValue {
-					t.Errorf("%q = %#v, want %q (wire org_name %q matches rule %q)",
-						tt.column, got, maskedValue, orgName, rule)
-				}
-				if !wantMasked && got != "081234567890" {
-					t.Errorf("%q = %#v, want the raw value (wire org_name %q does not match rule %q)",
-						tt.column, got, orgName, rule)
-				}
+		t.Run(rule, func(t *testing.T) {
+			p := newTestPool(t, func(cfg *Config) {
+				cfg.masker = maskerForTest(t, []string{rule}, nil)
 			})
-		}
+			orgName := wireOrgName(t, p, sql)
+			wantMasked := p.masker.Masked(nil, []byte(orgName))
+
+			res := mustQuery(t, p, sql)
+			got := res.Rows[0]["contact"]
+			if wantMasked && got != maskedValue {
+				t.Errorf("contact = %#v, want %q (wire org_name %q matches rule %q)",
+					got, maskedValue, orgName, rule)
+			}
+			if !wantMasked && got != "081234567890" {
+				t.Errorf("contact = %#v, want the raw value (wire org_name %q does not match rule %q)",
+					got, orgName, rule)
+			}
+		})
 	}
 }
 
@@ -1057,12 +1018,12 @@ func TestQueryMaskingNoteMergesWithTruncation(t *testing.T) {
 	}
 }
 
-// Strict mode, end to end: the peer's bypass queries must now mask or refuse
-// against a real database, not just in the planner unit tests.
+// Masking enforcement end to end: the pen-test bypass queries must mask or
+// refuse against a real database, not just in the planner unit tests.
 func TestQueryStrictMasking(t *testing.T) {
 	newStrictPool := func(t *testing.T) *Pool {
 		return newTestPool(t, func(cfg *Config) {
-			cfg.masker = strictMasker(t, []string{"phone", "email"})
+			cfg.masker = maskerForTest(t, []string{"phone", "email"}, nil)
 		})
 	}
 

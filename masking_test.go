@@ -117,14 +117,15 @@ func TestMaskerMasked(t *testing.T) {
 		{name: "except beats mask", orgTable: "room_types", orgName: "display_name", want: false},
 		{name: "except only in its table", orgTable: "users", orgName: "display_name", want: true},
 		{
-			// A UNION reports an origin name but no table (spike-verified);
-			// bare rules must still catch it.
+			// A column may carry an origin name without a table; bare rules
+			// must still catch it.
 			name: "empty table with a bare rule", orgTable: "", orgName: "phone", want: true,
 		},
 		{name: "empty table never matches a qualified rule", orgTable: "", orgName: "address", want: false},
 		{
-			// Expressions and aggregates have no origin; they pass through by
-			// design rather than masking COUNT(*).
+			// No origin name means Masked can't vouch either way and passes it
+			// through — planQuery only routes queries here whose wire origins
+			// are trustworthy, and hides untraceable columns itself.
 			name: "no origin passes through", orgTable: "users", orgName: "", want: false,
 		},
 	}

@@ -22,22 +22,16 @@ Read-only is enforced by the database, not by parsing your SQL.
   text is never inspected — grants are the fence.
 - **PII masking (optional)** — values of configured columns come back as
   `"<masked>"`. This is hygiene for cooperative callers — keeping personal data
-  out of agent transcripts — **not** an airtight boundary. Two levels:
-    - **Light** (`strict: false`, the default) matches on the column's *origin*
-      name from the wire protocol. A plain column keeps its origin through a
-      rename (`phone AS x`), but **derived tables, CTEs, `UNION`s, and computed
-      columns lose it and pass through unmasked** — so light masking only holds
-      for straightforward queries.
-    - **Strict** (`strict: true`) reads the query and traces each result column
-      back to its real source, closing those gaps: a personal column stays
-      masked through renames, sub-queries, CTEs, and `UNION`s, and a computed
-      column built from a personal one (`CONCAT(phone)`, `GROUP_CONCAT(phone)`,
-      `MAX(phone)`) is masked too (a plain `COUNT` is a number and passes). A
-      query it can't verify — a `SELECT *` inside a sub-query/join/union, or
-      syntax it can't parse — is **refused** with a message telling the agent to
-      simplify it.
-  - Even strict is not a wall against a determined caller. Known gaps, documented
-    by design (for those, use database-level controls — e.g. a user restricted to
+  out of agent transcripts — **not** an airtight boundary. When it is on, it is
+  enforced: the server reads every query and traces each result column back to
+  its real source, so a personal column stays masked through renames,
+  sub-queries, CTEs, and `UNION`s, and a computed column built from a personal
+  one (`CONCAT(phone)`, `GROUP_CONCAT(phone)`, `MAX(phone)`) is masked too (a
+  plain `COUNT` is a number and passes). A query it can't verify — a `SELECT *`
+  inside a sub-query/join/union, or syntax it can't parse — is **refused** with
+  a message telling the agent to simplify it.
+  - Still not a wall against a determined caller. Known gaps, documented by
+    design (for those, use database-level controls — e.g. a user restricted to
     redacted views):
     - **views** — the server does not read view definitions, so a personal column
       exposed through a view is only masked if you add the view's column to the
@@ -47,8 +41,8 @@ Read-only is enforced by the database, not by parsing your SQL.
       function's `PARTITION BY` / `ORDER BY` over a personal column (which reveals
       ordering or uniqueness, not the value) — neither of which masking inspects;
     - **stored functions** that return personal data from inside their body;
-    - **MariaDB-only syntax** the (MySQL-dialect) parser can't read is refused in
-      strict mode rather than run;
+    - **MariaDB-only syntax** the (MySQL-dialect) parser can't read is refused
+      rather than run;
     - query text in the server log is not scrubbed — and with file logging it
       persists on disk, so protect log files like the data they describe.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
@@ -145,7 +139,6 @@ masking:                # optional; omit the section to run without masking
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
 | `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
 | `masking.except` | Carve-outs for false positives; beats `mask`. |
-| `masking.strict` | Read queries to close the derived-table/CTE/`UNION`/computed-column gaps, refusing what can't be verified. Off by default. |
 
 `config.example.yaml` ships a starter `mask` list to trim, not a blank page —
 forgetting a column is the failure mode. A `masking` section that is enabled

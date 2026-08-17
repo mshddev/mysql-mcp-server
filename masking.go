@@ -17,13 +17,13 @@ type maskRule struct {
 	column string
 }
 
-// Masker decides per column whether values are masked, keyed on the column's
-// wire-protocol origin (OrgTable/OrgName). A nil Masker masks nothing.
+// Masker holds the parsed masking rules. A nil Masker masks nothing. When a
+// Masker exists, every query is verified by reading it (planQuery in
+// strictmask.go); rule matching against a wire-protocol origin (Masked) is the
+// fast path for queries simple enough that the wire tag is trustworthy.
 type Masker struct {
 	mask   []maskRule
 	except []maskRule
-	// strict enables the query-parsing enforcement path (see strictmask.go).
-	strict bool
 }
 
 // NewMasker parses the masking config into a Masker, or nil when the section
@@ -44,15 +44,12 @@ func NewMasker(mc *MaskingConfig) (*Masker, error) {
 	// An omitted enabled flag means true: whoever wrote rules wants them
 	// active, and defaulting the other way would disable masking silently.
 	if mc.Enabled != nil && !*mc.Enabled {
-		if mc.Strict {
-			return nil, fmt.Errorf("masking.strict requires masking enabled")
-		}
 		return nil, nil
 	}
 	if len(mask) == 0 {
 		return nil, fmt.Errorf("masking is enabled but masking.mask has no rules; set masking.enabled: false to opt out")
 	}
-	return &Masker{mask: mask, except: except, strict: mc.Strict}, nil
+	return &Masker{mask: mask, except: except}, nil
 }
 
 func parseRules(list string, entries []string) ([]maskRule, error) {

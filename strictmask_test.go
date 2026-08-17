@@ -6,17 +6,8 @@ import (
 	"testing"
 )
 
-func strictMasker(t *testing.T, mask []string) *Masker {
-	t.Helper()
-	m, err := NewMasker(&MaskingConfig{Strict: true, Mask: mask})
-	if err != nil {
-		t.Fatalf("NewMasker: %v", err)
-	}
-	return m
-}
-
 func TestPlanQuery(t *testing.T) {
-	m := strictMasker(t, []string{"phone", "*_phone", "email", "users.address"})
+	m := maskerForTest(t, []string{"phone", "*_phone", "email", "users.address"}, nil)
 
 	tests := []struct {
 		name     string
@@ -104,20 +95,5 @@ func TestPlanQuery(t *testing.T) {
 				t.Errorf("mask = %v, want %v", plan.mask, tt.wantMask)
 			}
 		})
-	}
-}
-
-func TestNewMaskerStrict(t *testing.T) {
-	// strict on a disabled section is a contradiction.
-	if _, err := NewMasker(&MaskingConfig{Strict: true, Enabled: new(false), Mask: []string{"phone"}}); err == nil {
-		t.Error("strict + disabled masking was accepted, want an error")
-	}
-	// strict with rules is fine and sets the flag.
-	m, err := NewMasker(&MaskingConfig{Strict: true, Mask: []string{"phone"}})
-	if err != nil {
-		t.Fatalf("NewMasker: %v", err)
-	}
-	if m == nil || !m.strict {
-		t.Errorf("masker = %v, want a strict masker", m)
 	}
 }

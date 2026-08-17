@@ -61,15 +61,10 @@ func main() {
 		"Results are capped; narrow queries with WHERE/LIMIT."
 	if cfg.masker != nil {
 		description += " Some columns come back as \"<masked>\" under this server's PII policy " +
-			"(listed per result in masked_columns); that is intended, do not try to recover the values."
-		if cfg.masker.strict {
-			description += " To verify masking the server reads the query, and refuses ones it can't " +
-				"check: keep queries straightforward — a SELECT * inside a sub-query, join, or union is " +
-				"refused (list the columns instead), and computed columns built from PII are masked."
-		} else {
-			description += " Select PII columns as plain columns (aliases are fine) — computed expressions " +
-				"cannot be traced for masking, so do not wrap PII columns in functions like CONCAT."
-		}
+			"(listed per result in masked_columns); that is intended, do not try to recover the values." +
+			" To verify masking the server reads the query, and refuses ones it can't " +
+			"check: keep queries straightforward — a SELECT * inside a sub-query, join, or union is " +
+			"refused (list the columns instead), and computed columns built from PII are masked."
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "query",

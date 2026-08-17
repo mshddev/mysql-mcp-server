@@ -16,10 +16,10 @@ import (
 	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
 )
 
-// queryPlan is the strict-mode decision for one query. useWire means the query
-// is simple enough that the wire-protocol origin tag is trustworthy, so the
-// caller falls back to the ordinary Masker; otherwise mask[i] says whether
-// result column i must be hidden.
+// queryPlan is the masking decision for one query. useWire means the query is
+// simple enough that the wire-protocol origin tag is trustworthy, so the
+// caller falls back to per-column rule matching (Masker.Masked); otherwise
+// mask[i] says whether result column i must be hidden.
 type queryPlan struct {
 	useWire bool
 	mask    []bool
@@ -40,11 +40,11 @@ func parseOne(sql string) (ast.StmtNode, error) {
 }
 
 func refusef(format string, args ...any) error {
-	return fmt.Errorf("strict PII masking refused this query: "+format, args...)
+	return fmt.Errorf("PII masking refused this query: "+format, args...)
 }
 
 // planQuery decides masking for one statement by reading it, not by trusting
-// the wire tag. It is only called when masking is enabled with strict: true.
+// the wire tag. It is called for every query while masking is enabled.
 func (m *Masker) planQuery(sql string) (*queryPlan, error) {
 	stmt, err := parseOne(sql)
 	if err != nil {
