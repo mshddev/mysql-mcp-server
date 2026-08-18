@@ -120,7 +120,7 @@ mode: read_only                # or full_access: writes allowed, grants are the 
 
 server:
   listen: "127.0.0.1:3000"     # loopback by default; ":3000" exposes on all interfaces
-  auth_token: ${MCP_AUTH_TOKEN}
+  auth_token: ${MYSQL_MCP_AUTH_TOKEN}
 
 database:
   host: 127.0.0.1
@@ -179,8 +179,8 @@ unset.
 ## Run
 
 ```bash
-export MCP_AUTH_TOKEN=...     # token clients must present
-export MYSQL_PASSWORD=...     # password of the DB user
+export MYSQL_MCP_AUTH_TOKEN=...   # token clients must present
+export MYSQL_PASSWORD=...         # password of the DB user
 ./mysql-mcp-server --config ./config.yaml
 ```
 
@@ -210,7 +210,7 @@ expansion:
 ```
 
 Set `MYSQL_MCP_TOKEN` in your shell profile to the same value as
-`MCP_AUTH_TOKEN`. Then ask the agent a data question — it will use `SHOW TABLES`
+`MYSQL_MCP_AUTH_TOKEN`. Then ask the agent a data question — it will use `SHOW TABLES`
 / `DESCRIBE` to find its way around, then `SELECT`.
 
 ## The `query` Tool
@@ -268,7 +268,7 @@ mysql -h 127.0.0.1 -u root < seed/seed.sql
 Run against it:
 
 ```bash
-MCP_AUTH_TOKEN=localsecret123 MYSQL_PASSWORD=devpassword ./mysql-mcp-server
+MYSQL_MCP_AUTH_TOKEN=localsecret123 MYSQL_PASSWORD=devpassword ./mysql-mcp-server
 ```
 
 Run the tests:

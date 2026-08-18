@@ -18,7 +18,7 @@ mode: read_only
 server:
   # Loopback by default; use ":3000" to expose on all interfaces (e.g. team VM).
   listen: "127.0.0.1:3000"
-  auth_token: ${MCP_AUTH_TOKEN}
+  auth_token: ${MYSQL_MCP_AUTH_TOKEN}
 
 database:
   host: 127.0.0.1
