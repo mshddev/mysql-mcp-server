@@ -1,5 +1,9 @@
 # Copy to config.yaml (gitignored) and adjust per environment.
-# The two secrets come from the environment via ${VAR} placeholders.
+# ${VAR} placeholders are filled from the environment. They work in every
+# text setting the server reads that way — listen, auth_token, host,
+# username, password, dbname and logging.file — not just the two secrets
+# below. An unset variable is a startup error naming it, never a silent
+# empty string.
 # These defaults point at a local dev database seeded via seed/seed.sql.
 
 # What the server itself lets through:
@@ -23,9 +27,17 @@ database:
   password: ${MYSQL_PASSWORD}
   dbname: mcp_dev
 
+# Guardrails on a single call. All three must be at least 1.
 limits:
+  # A query still running at this point is killed on the server, not just
+  # abandoned by the client.
   timeout_seconds: 30
+  # Caps the JSON sent back — rows stop streaming once it is reached and the
+  # response says so. It does NOT cap what MySQL reads: a wide blob column
+  # still crosses the wire in full (it counts as a short placeholder here), so
+  # timeout_seconds is the only backstop against a huge underlying read.
   max_response_bytes: 512000
+  # Size of the connection pool, and so the ceiling on concurrent queries.
   max_connections: 10
 
 # Logging: one JSON line per event, to stdout by default. Switch output to

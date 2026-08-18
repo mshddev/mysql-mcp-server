@@ -110,8 +110,10 @@ Copy the example and adjust it for your database:
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml` is gitignored. The two secrets are pulled from the environment via
-`${VAR}` placeholders, so nothing sensitive lands in the file:
+`config.yaml` is gitignored. `${VAR}` placeholders are pulled from the
+environment, so nothing sensitive lands in the file. They work in `listen`,
+`auth_token`, `host`, `username`, `password`, `dbname` and `logging.file`; an
+unset variable is a startup error naming it, never a silent empty string:
 
 ```yaml
 mode: read_only                # or full_access: writes allowed, grants are the fence
@@ -148,13 +150,13 @@ masking:                # optional; omit the section to run without masking
 | `server.listen` | Address to bind. Loopback by default. |
 | `server.auth_token` | Bearer token clients must present. |
 | `database.host` / `port` | Where the database lives. |
-| `database.username` / `password` | The read-only user and its password. |
+| `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
 | `database.dbname` | Default database (schema) to connect to. |
 | `limits.timeout_seconds` | Per-query timeout before a server-side kill. |
 | `limits.max_response_bytes` | Result-size cap before truncation. |
 | `limits.max_connections` | Pool size, doubling as the concurrency ceiling. |
 | `logging.output` | `stdout` (default) or `file`. |
-| `logging.file` | Log file path; required with `output: file`. Supports `${VAR}`. |
+| `logging.file` | Log file path; required with `output: file`. |
 | `logging.level` | `debug`, `info` (default), `warn`, or `error`. |
 | `logging.rotation` | For file output: `max_size_mb` (rotate at this size, default 100), `max_backups` / `max_age_days` (0 = keep everything, the default), `compress`. |
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
