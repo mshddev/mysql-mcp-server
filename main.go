@@ -47,6 +47,27 @@ func main() {
 	// db.go logs through the package-level default, so it must follow the swap.
 	slog.SetDefault(logger)
 
+	// Masking cannot be a guarantee once writes are allowed, and this is the
+	// deployer's one reliable notice of that: it prints on every start, where
+	// a line in a config file or a doc page only reaches whoever reads it.
+	if cfg.masker != nil && cfg.fullAccess() {
+		// This one warning always goes to stdout, whatever logging.output and
+		// logging.level say: routed through the configured logger it would land
+		// in a file nobody opens, or be dropped outright at level error, and the
+		// person deploying a write-enabled server has to see it. Written as a
+		// JSON line like every other, so a collector reading stdout can still
+		// parse the stream. It also goes to the real logger when that writes
+		// somewhere else, so a file log keeps the record.
+		warn := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		const msg = "masking is best-effort under full_access, not a guarantee"
+		const detail = "a write can copy PII into tables the mask rules don't name; " +
+			"writes, DDL, and statements the parser can't read run with wire-metadata masking only"
+		warn.Warn(msg, "detail", detail)
+		if cfg.Logging.Output != "stdout" {
+			logger.Warn(msg, "detail", detail)
+		}
+	}
+
 	pool := NewPool(cfg)
 	// Fail fast if the database is unreachable or the session setup is rejected.
 	probeCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)

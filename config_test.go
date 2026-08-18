@@ -332,29 +332,28 @@ func TestLoadConfigMode(t *testing.T) {
 		{name: "unknown mode is an error", body: validConfig + "mode: read_write\n", wantErr: "mode"},
 		{
 			// Write access defeats a mask list (a write can copy PII into
-			// tables the rules don't name), so running both takes an explicit
-			// acknowledgment.
-			name:    "full_access with masking needs best_effort",
-			body:    validConfig + "mode: full_access\nmasking:\n  mask: [phone]\n",
-			wantErr: "best_effort",
-		},
-		{
-			name:           "full_access with acknowledged masking",
-			body:           validConfig + "mode: full_access\nmasking:\n  mask: [phone]\n  best_effort: true\n",
+			// tables the rules don't name), so masking relaxes here. It
+			// follows from the mode and needs no acknowledgment key.
+			name:           "full_access with masking starts and is best-effort",
+			body:           validConfig + "mode: full_access\nmasking:\n  mask: [phone]\n",
 			wantFullAccess: true,
 			wantBestEffort: true,
 		},
 		{
-			// Disabled masking needs no acknowledgment.
+			// Disabled masking leaves no masker to relax.
 			name:           "full_access with disabled masking",
 			body:           validConfig + "mode: full_access\nmasking:\n  enabled: false\n  mask: [phone]\n",
 			wantFullAccess: true,
 		},
 		{
-			// best_effort under read_only is inert, not an error, so one
-			// config template can be flipped between environments by mode
-			// alone.
-			name: "best_effort under read_only is ignored",
+			// read_only keeps full enforcement: nothing is best-effort there.
+			name: "read_only masking is fully enforced",
+			body: validConfig + "masking:\n  mask: [phone]\n",
+		},
+		{
+			// The retired acknowledgment key. yaml ignores unknown fields, so
+			// an old config keeps working; behaviour now comes from the mode.
+			name: "stale best_effort key is ignored",
 			body: validConfig + "masking:\n  mask: [phone]\n  best_effort: true\n",
 		},
 	}

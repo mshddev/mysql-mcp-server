@@ -54,8 +54,9 @@ the agent may do — writes included.
       rather than run;
     - under **`full_access`**, masking degrades further — a write can copy
       personal data into tables the rules don't name, and writes, DDL, and
-      unparseable statements run with wire-metadata masking only — so the
-      config demands an explicit `best_effort: true` acknowledgment there;
+      unparseable statements run with wire-metadata masking only. This follows
+      from the mode, so there is nothing to switch on; the server logs a
+      warning at startup whenever masking runs alongside write access;
     - query text in the server log is not scrubbed — and with file logging it
       persists on disk, so protect log files like the data they describe.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
@@ -159,7 +160,11 @@ masking:                # optional; omit the section to run without masking
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
 | `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
 | `masking.except` | Carve-outs for false positives; beats `mask`. |
-| `masking.best_effort` | Required `true` to run masking under `full_access`, acknowledging it is a seatbelt there, not a guarantee. |
+
+Masking strictness is not configurable — it follows `mode`. Under `read_only`
+every query is enforced. Under `full_access` reads the server can parse are
+still enforced, while writes, DDL, and unparseable statements fall back to
+wire-metadata masking; it warns at startup when it starts in that state.
 
 `config.example.yaml` ships a starter `mask` list to trim, not a blank page —
 forgetting a column is the failure mode. A `masking` section that is enabled

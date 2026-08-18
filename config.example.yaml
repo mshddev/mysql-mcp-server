@@ -57,11 +57,12 @@ logging:
 # act on. Columns exposed through views are the known gap — add the view's own
 # column names to the rules.
 #
-# Under full_access, masking degrades to a best-effort seatbelt: a write can
-# copy PII into tables the rules don't name, and writes, DDL, and statements
-# the parser can't read run with wire-metadata masking only (reads it can
-# parse stay strictly checked). The server refuses to start in full_access
-# with masking on unless you acknowledge that with best_effort: true.
+# How strictly this is enforced follows `mode` above — there is no separate
+# setting. Under read_only it is enforced everywhere. Under full_access it
+# degrades to a best-effort seatbelt: a write can copy PII into tables the
+# rules don't name, and writes, DDL, and statements the parser can't read run
+# with wire-metadata masking only (reads it can parse stay strictly checked).
+# The server logs a warning at startup whenever it runs in that combination.
 masking:
   enabled: true
   mask:

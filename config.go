@@ -63,10 +63,6 @@ type MaskingConfig struct {
 	Enabled *bool    `yaml:"enabled"`
 	Mask    []string `yaml:"mask"`
 	Except  []string `yaml:"except"`
-	// BestEffort acknowledges that under full_access, masking is a seatbelt
-	// rather than a guarantee: a write can copy PII into tables the rules
-	// don't name. Running masking in full_access mode requires it.
-	BestEffort bool `yaml:"best_effort"`
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
@@ -146,12 +142,12 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.masker, err = NewMasker(cfg.Masking); err != nil {
 		return nil, err
 	}
+	// Under full_access masking is a seatbelt rather than a guarantee, so the
+	// masker relaxes for statements it cannot check. That follows from the
+	// mode alone — there is nothing for a config key to decide, and making the
+	// server refuse to start here only cost a paste of an acknowledgment.
+	// main logs the trade-off at startup instead.
 	if cfg.masker != nil && cfg.fullAccess() {
-		if !cfg.Masking.BestEffort {
-			return nil, fmt.Errorf("masking under full_access is best-effort, not a guarantee: " +
-				"a write can copy PII into tables the rules don't name; " +
-				"set masking.best_effort: true to acknowledge that, or disable masking")
-		}
 		cfg.masker.bestEffort = true
 	}
 	return cfg, nil
