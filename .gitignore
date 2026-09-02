@@ -2,4 +2,3 @@ mysql-mcp-server
 *.local.yaml
 .env
 config.yaml
-.claude/settings.local.json
