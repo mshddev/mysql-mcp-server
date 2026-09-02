@@ -28,8 +28,12 @@ a reachable MySQL or MariaDB, and enough access on it to create a user.
 password:
 
 ```sql
+-- Both host variants: a default MariaDB install keeps anonymous ''@'localhost'
+-- users that shadow '%' users on local connections.
 CREATE USER 'mcp_readonly'@'%' IDENTIFIED BY 'a-strong-password';
+CREATE USER 'mcp_readonly'@'localhost' IDENTIFIED BY 'a-strong-password';
 GRANT SELECT ON yourdb.* TO 'mcp_readonly'@'%';
+GRANT SELECT ON yourdb.* TO 'mcp_readonly'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
@@ -159,7 +163,7 @@ curl gets rows back, an MCP client will too — wire one up under
   and `seed/seed.sql` a throwaway database to try it against
 
 Day-to-day development runs against MariaDB 10.11; MySQL is supported and the
-suite accommodates both, so tell me if a real MySQL 8 deployment disagrees.
+suite accommodates both, so open an issue if a real MySQL 8 deployment disagrees.
 
 ## Install
 
@@ -367,7 +371,7 @@ config resolves and the database answers.
 | `config references unset environment variables: [MYSQL_MCP_AUTH_TOKEN]` | A `${VAR}` in the config has nothing behind it. Export it, or write the literal value in if it isn't a secret. |
 | `database unreachable: dial tcp …: connect: connection refused` | Wrong host or port, or the database is down. |
 | `database unreachable: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
-| `log file` errors at startup | `logging.output: file` and the path isn't writable. It fails rather than running silent. |
+| `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
 | `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
 | `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST` — including the health check you were probably reaching for, which doesn't exist. |
 | `ERROR 1142 (42000): … command denied to user …` | Read-only doing its job: the grants refused a write. |
