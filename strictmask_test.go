@@ -12,9 +12,9 @@ func TestPlanQuery(t *testing.T) {
 	tests := []struct {
 		name     string
 		sql      string
-		wantErr  string  // non-empty => expect a refusal mentioning this
-		wire     bool    // expect useWire (simple query, tag trusted)
-		wantMask []bool  // expected per-column decision when traced
+		wantErr  string // non-empty => expect a refusal mentioning this
+		wire     bool   // expect useWire (simple query, tag trusted)
+		wantMask []bool // expected per-column decision when traced
 	}{
 		// --- simple shapes take the wire path ---
 		{name: "plain column", sql: "SELECT phone FROM users", wire: true},

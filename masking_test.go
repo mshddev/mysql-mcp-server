@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 func TestNewMasker(t *testing.T) {
 	tests := []struct {
 		name    string

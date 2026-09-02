@@ -136,10 +136,10 @@ const (
 )
 
 type colOrigin struct {
-	kind    originKind
-	table   string
-	column  string
-	inputs  []colOrigin
+	kind   originKind
+	table  string
+	column string
+	inputs []colOrigin
 }
 
 // fieldResult is one output column of a query: its label, whether it is a

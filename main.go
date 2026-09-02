@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,7 +29,13 @@ type FullAccessQueryInput struct {
 
 func main() {
 	configPath := flag.String("config", "./config.yaml", "path to YAML config")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("mysql-mcp-server " + version)
+		return
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
