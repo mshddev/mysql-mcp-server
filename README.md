@@ -19,6 +19,84 @@ parsing your SQL. For disposable environments like staging, `mode: full_access`
 drops the server-side write block and lets the MySQL user's grants decide what
 the agent may do — writes included.
 
+## Quickstart
+
+Zero to a working server against a database you already have. You need Go 1.26+,
+a reachable MySQL or MariaDB, and enough access on it to create a user.
+
+**1. Create a read-only user.** As an admin, with your own database name and
+password:
+
+```sql
+CREATE USER 'mcp_readonly'@'%' IDENTIFIED BY 'a-strong-password';
+GRANT SELECT ON yourdb.* TO 'mcp_readonly'@'%';
+FLUSH PRIVILEGES;
+```
+
+verify:
+
+```bash
+mysql -h 127.0.0.1 -u mcp_readonly -p -e "SELECT 1"
+```
+
+**2. Build it.**
+
+```bash
+git clone https://github.com/mshddev/mysql-mcp-server.git
+cd mysql-mcp-server
+go build -o mysql-mcp-server .
+```
+
+verify:
+
+```bash
+./mysql-mcp-server --version
+```
+
+**3. Write the config.**
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Edit `database` to match step 1 — host, port, `username`, `dbname`. Then trim
+`masking.mask` to columns your schema actually has; it ships as a starter list
+because forgetting one is the failure mode. Everything else has a working
+default, and [Configure](#configure) documents the rest.
+
+**4. Run it.**
+
+```bash
+export MYSQL_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+echo "$MYSQL_MCP_AUTH_TOKEN"          # your client needs this in step 5
+export MYSQL_PASSWORD='a-strong-password'
+./mysql-mcp-server --config ./config.yaml
+```
+
+It stays in the foreground, and a healthy start logs one line:
+
+```json
+{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.1.0"}
+```
+
+If it exits instead, the error says why — [Troubleshooting](#troubleshooting) has
+the common ones.
+
+**5. Ask it something.** In a second terminal, with `TOKEN` set to what step 4
+printed:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SHOW TABLES"}}}'
+```
+
+The reply is a server-sent-event `data:` line carrying the JSON-RPC result. If
+curl gets rows back, an MCP client will too — wire one up under
+[Connect a Client](#connect-a-client).
+
 ## Safety Model
 
 - **Two modes, chosen per deployment.** `read_only` (the default, and what the
@@ -77,8 +155,11 @@ the agent may do — writes included.
 - Go 1.26 or newer
 - A reachable MySQL or MariaDB
 - A `SELECT`-only database user (or, for `full_access`, a user whose grants say
-  exactly what the agent may do) — see [Local Development](#local-development)
-  for a seed you can copy
+  exactly what the agent may do) — [Quickstart](#quickstart) has the `GRANT`,
+  and `seed/seed.sql` a throwaway database to try it against
+
+Day-to-day development runs against MariaDB 10.11; MySQL is supported and the
+suite accommodates both, so tell me if a real MySQL 8 deployment disagrees.
 
 ## Install
 
@@ -93,7 +174,7 @@ go build -o mysql-mcp-server .
 verify:
 
 ```bash
-./mysql-mcp-server --help
+./mysql-mcp-server --version
 ```
 
 Or install the binary straight into `$GOBIN`:
@@ -190,7 +271,22 @@ file` writes them to a log file instead, rotated by size with configurable
 retention (see `config.example.yaml`). A log file that can't be created or
 written fails startup rather than running silent.
 
-## Connect a Client (Claude Code)
+## Connect a Client
+
+The transport is **streamable HTTP only — there is no stdio mode**, so a client
+that only launches subprocesses can't talk to this. Everything else needs three
+things:
+
+- **Endpoint** — `http://localhost:3000/mcp` (any path on the port works; `/mcp`
+  is the convention)
+- **Header** — `Authorization: Bearer <your token>`
+- **Tool** — `query`, one string argument, `sql`
+
+The server is stateless, so there is no session handshake to do first: a client
+can call `tools/list` or `tools/call` cold, which is also why the curl in
+[Quickstart](#quickstart) works on its own.
+
+### Claude Code
 
 Point `.mcp.json` at the server, keeping the token out of git with `${VAR}`
 expansion:
@@ -202,16 +298,22 @@ expansion:
       "url": "http://localhost:3000/mcp",
       "type": "http",
       "headers": {
-        "Authorization": "Bearer ${MYSQL_MCP_TOKEN}"
+        "Authorization": "Bearer ${MYSQL_MCP_AUTH_TOKEN}"
       }
     }
   }
 }
 ```
 
-Set `MYSQL_MCP_TOKEN` in your shell profile to the same value as
-`MYSQL_MCP_AUTH_TOKEN`. Then ask the agent a data question — it will use `SHOW TABLES`
-/ `DESCRIBE` to find its way around, then `SELECT`.
+Export `MYSQL_MCP_AUTH_TOKEN` in your shell profile — the same value the server
+runs with — then restart Claude Code and ask a data question. The agent will use
+`SHOW TABLES` / `DESCRIBE` to find its way around, then `SELECT`.
+
+### Other clients
+
+Any client that speaks streamable HTTP and can set a header takes the same three
+values. If yours can't set one, put a proxy in front that adds it: the token is
+checked on every request, and it is the only way in.
 
 ## The `query` Tool
 
@@ -254,6 +356,30 @@ A few rules worth knowing:
   there is one. Each call is one statement with autocommit: no semicolon
   batches, no transactions spanning calls, and session state (`SET ...`) does
   not persist between calls.
+
+## Troubleshooting
+
+Startup problems are loud on purpose — the server refuses to listen until the
+config resolves and the database answers.
+
+| What you see | What it means |
+|---|---|
+| `config references unset environment variables: [MYSQL_MCP_AUTH_TOKEN]` | A `${VAR}` in the config has nothing behind it. Export it, or write the literal value in if it isn't a secret. |
+| `database unreachable: dial tcp …: connect: connection refused` | Wrong host or port, or the database is down. |
+| `database unreachable: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
+| `log file` errors at startup | `logging.output: file` and the path isn't writable. It fails rather than running silent. |
+| `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
+| `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST` — including the health check you were probably reaching for, which doesn't exist. |
+| `ERROR 1142 (42000): … command denied to user …` | Read-only doing its job: the grants refused a write. |
+| `PII masking refused this query: only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed` | The same refusal one layer earlier — with masking on, the parser stops a write before the database sees it. |
+| `PII masking refused this query: a SELECT * inside a sub-query, join, or union can't be verified` | Masking can't trace `*` back to real columns. List them explicitly. |
+| `PII masking refused this query: could not parse it to verify masking` | The MySQL-dialect parser couldn't read the statement, usually MariaDB-only syntax. Rewrite it, or run that deployment without masking. |
+| A column comes back `"<masked>"` and shouldn't | A rule matched its name. Put the qualified column in `masking.except` — it beats `mask`. |
+| A column you wanted masked comes back in the clear | Nothing matched it. Rules match a column's *real* name, so a view that renames one needs the view's own column added. See the views gap in [Safety Model](#safety-model). |
+| `truncated at ~N bytes — narrow the query (add WHERE or LIMIT)` | The response cap. Narrow the query, or raise `limits.max_response_bytes`. |
+| Every query dies at the same duration | `limits.timeout_seconds`. The kill runs server-side, so the database stops working on it too. |
+| Writes still fail under `full_access` | Grants are the only fence there. Check `SHOW GRANTS`, and confirm the startup line says `"mode":"full_access"`. |
+| The agent keeps hitting refusals it can't fix | Masking strictness follows `mode` and can't be tuned. Either simplify the queries, name the columns, or run that deployment with `masking.enabled: false`. |
 
 ## Local Development
 
