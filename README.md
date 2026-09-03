@@ -43,27 +43,27 @@ verify:
 mysql -h 127.0.0.1 -u mcp_readonly -p -e "SELECT 1"
 ```
 
-**2. Build it.**
+**2. Install it.**
 
 ```bash
-git clone https://github.com/mshddev/mysql-mcp-server.git
-cd mysql-mcp-server
-go build -o mysql-mcp-server .
+curl -fsSL https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/install.sh | sh
 ```
 
-verify:
+Other routes (Go install, build from source, manual download) are under
+[Install](#install). Verify:
 
 ```bash
-./mysql-mcp-server --version
+mysql-mcp-server --version
 ```
 
 **3. Write the config.**
 
 ```bash
-cp config.example.yaml config.yaml
+curl -fsSL -o config.yaml https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/config.example.yaml
 ```
 
-Edit `database` to match step 1 — host, port, `username`, `dbname`. Then trim
+(From a clone, that's `cp config.example.yaml config.yaml`.) Edit `database`
+to match step 1 — host, port, `username`, `dbname`. Then trim
 `masking.mask` to columns your schema actually has; it ships as a starter list
 because forgetting one is the failure mode. Everything else has a working
 default, and [Configure](#configure) documents the rest.
@@ -74,13 +74,13 @@ default, and [Configure](#configure) documents the rest.
 export MYSQL_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
 echo "$MYSQL_MCP_AUTH_TOKEN"          # your client needs this in step 5
 export MYSQL_PASSWORD='a-strong-password'
-./mysql-mcp-server --config ./config.yaml
+mysql-mcp-server --config ./config.yaml
 ```
 
 It stays in the foreground, and a healthy start logs one line:
 
 ```json
-{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.0.1"}
+{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.0.2"}
 ```
 
 If it exits instead, the error says why — [Troubleshooting](#troubleshooting) has
@@ -167,7 +167,30 @@ suite accommodates both, so open an issue if a real MySQL 8 deployment disagrees
 
 ## Install
 
-Build from source:
+Grab a prebuilt binary (Linux and macOS, amd64 and arm64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/install.sh | sh
+```
+
+It picks the latest release, verifies the sha256 against the release's
+`checksums.txt`, and puts `mysql-mcp-server` in `/usr/local/bin` if that's
+writable, otherwise `~/.local/bin`. It never calls `sudo`. `VERSION=v0.0.2`
+pins a release and `INSTALL_DIR=...` changes the destination. Piping a script
+into `sh` is a trust decision; [`install.sh`](install.sh) is short, so read it
+first if you'd rather.
+
+Archives for every platform, including Windows, are on the
+[Releases page](https://github.com/mshddev/mysql-mcp-server/releases) if you'd
+rather download by hand.
+
+With a Go toolchain, install straight into `$GOBIN`:
+
+```bash
+go install github.com/mshddev/mysql-mcp-server@latest
+```
+
+Or build from source:
 
 ```bash
 git clone https://github.com/mshddev/mysql-mcp-server.git
@@ -175,17 +198,14 @@ cd mysql-mcp-server
 go build -o mysql-mcp-server .
 ```
 
-verify:
+Whichever route you took, verify:
 
 ```bash
-./mysql-mcp-server --version
+mysql-mcp-server --version
 ```
 
-Or install the binary straight into `$GOBIN`:
-
-```bash
-go install github.com/mshddev/mysql-mcp-server@latest
-```
+Release binaries and `go install` builds report their tag. A local build reports
+the nearest tag with a `+dirty` or pseudo-version suffix.
 
 ## Configure
 
@@ -266,7 +286,7 @@ unset.
 ```bash
 export MYSQL_MCP_AUTH_TOKEN=...   # token clients must present
 export MYSQL_PASSWORD=...         # password of the DB user
-./mysql-mcp-server --config ./config.yaml
+mysql-mcp-server --config ./config.yaml
 ```
 
 Logs are one JSON line per query — time, SQL, duration, truncated flag, error

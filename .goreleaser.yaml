@@ -1,0 +1,56 @@
+# GoReleaser config. Runs from .github/workflows/release.yml on every v* tag.
+# Local dry run (no publishing): goreleaser release --snapshot --clean
+version: 2
+
+project_name: mysql-mcp-server
+
+builds:
+  - main: .
+    binary: mysql-mcp-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    # mysql-mcp-server_0.0.2_linux_amd64.tar.gz — install.sh depends on this shape.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - config.example.yaml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
+      - "^test:"
+
+release:
+  github:
+    owner: mshddev
+    name: mysql-mcp-server
+  draft: false
+  prerelease: auto

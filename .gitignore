@@ -2,3 +2,4 @@ mysql-mcp-server
 *.local.yaml
 .env
 config.yaml
+dist/

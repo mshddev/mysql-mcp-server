@@ -8,13 +8,28 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "0.0.1"
+// version is set at release time via -ldflags "-X main.version=…" (see
+// .goreleaser.yaml). Other builds fall back to what Go embeds in the binary:
+// the module version for `go install …@vX.Y.Z`, the nearest tag (plus
+// "+dirty" or a pseudo-version suffix) for a local `go build` in a checkout,
+// and "dev" only when there is no VCS information at all.
+var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		version = strings.TrimPrefix(bi.Main.Version, "v")
+	}
+}
 
 type QueryInput struct {
 	SQL string `json:"sql" jsonschema:"The SQL statement to execute. Read-only: only SELECT/SHOW/DESCRIBE/EXPLAIN will succeed."`
