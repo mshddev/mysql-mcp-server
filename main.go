@@ -119,8 +119,8 @@ func main() {
 		description += " Some columns come back as \"<masked>\" under this server's PII policy " +
 			"(listed per result in masked_columns); that is intended, do not try to recover the values." +
 			" To verify masking the server reads the query, and refuses ones it can't " +
-			"check: keep queries straightforward — a SELECT * inside a sub-query, join, or union is " +
-			"refused (list the columns instead), and computed columns built from PII are masked."
+			"check: a SELECT * inside a sub-query, join, or union is refused (list the columns " +
+			"instead), and computed columns built from PII are masked."
 		if cfg.fullAccess() {
 			description += " Write statements are not masking-checked."
 		}
