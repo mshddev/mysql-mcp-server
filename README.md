@@ -80,7 +80,7 @@ export MYSQL_PASSWORD='a-strong-password'
 It stays in the foreground, and a healthy start logs one line:
 
 ```json
-{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.1.0"}
+{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.0.1"}
 ```
 
 If it exits instead, the error says why — [Troubleshooting](#troubleshooting) has
