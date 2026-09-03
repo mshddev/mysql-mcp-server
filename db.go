@@ -127,6 +127,24 @@ func (p *Pool) setupSession(conn *client.Conn) error {
 	return nil
 }
 
+// describeConnectError says what a failed connection attempt actually was —
+// a login the server refused, a database that isn't there, or a host that
+// never answered — so the startup log doesn't call a bad password
+// "unreachable". The driver's own text follows verbatim.
+func describeConnectError(err error) string {
+	var my *mysql.MyError
+	if errors.As(err, &my) {
+		switch my.Code {
+		case mysql.ER_ACCESS_DENIED_ERROR, mysql.ER_DBACCESS_DENIED_ERROR:
+			return "database login refused: " + err.Error()
+		case mysql.ER_BAD_DB_ERROR:
+			return "database not found: " + err.Error()
+		}
+		return "database rejected the connection: " + err.Error()
+	}
+	return "database unreachable: " + err.Error()
+}
+
 func (p *Pool) acquire(ctx context.Context) (*client.Conn, error) {
 	select {
 	case p.sem <- struct{}{}:

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/pingcap/tidb/pkg/parser"
 	"github.com/pingcap/tidb/pkg/parser/ast"
@@ -41,6 +42,22 @@ func parseOne(sql string) (ast.StmtNode, error) {
 
 func refusef(format string, args ...any) error {
 	return fmt.Errorf("PII masking refused this query: "+format, args...)
+}
+
+// stmtKind names a statement the way a person would in an error message:
+// *ast.DeleteStmt → "DELETE", *ast.CreateTableStmt → "CREATE TABLE". The Go
+// type name is the only handle the parser gives us, and it must not leak to
+// the agent as-is.
+func stmtKind(stmt ast.StmtNode) string {
+	name := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprintf("%T", stmt), "*ast."), "Stmt")
+	var b strings.Builder
+	for i, r := range name {
+		if i > 0 && unicode.IsUpper(r) {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(unicode.ToUpper(r))
+	}
+	return b.String()
 }
 
 // planQuery decides masking for one statement by reading it, not by trusting
@@ -80,7 +97,7 @@ func (m *Masker) planQuery(sql string) (*queryPlan, error) {
 			// they do return get wire-tag masking.
 			return &queryPlan{useWire: true}, nil
 		}
-		return nil, refusef("only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed (got %T)", stmt)
+		return nil, refusef("only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed in read_only mode (this is a %s)", stmtKind(stmt))
 	}
 }
 

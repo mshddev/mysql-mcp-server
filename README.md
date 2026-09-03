@@ -370,12 +370,13 @@ config resolves and the database answers.
 |---|---|
 | `config references unset environment variables: [MYSQL_MCP_AUTH_TOKEN]` | A `${VAR}` in the config has nothing behind it. Export it, or write the literal value in if it isn't a secret. |
 | `database unreachable: dial tcp …: connect: connection refused` | Wrong host or port, or the database is down. |
-| `database unreachable: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
+| `database login refused: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
+| `database login refused: … ERROR 1044 (42000): Access denied for user … to database …` | The user has no grant on `database.dbname` — misspelled, or the `GRANT` named a different schema. |
 | `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
 | `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
 | `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST` — including the health check you were probably reaching for, which doesn't exist. |
 | `ERROR 1142 (42000): … command denied to user …` | Read-only doing its job: the grants refused a write. |
-| `PII masking refused this query: only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed` | The same refusal one layer earlier — with masking on, the parser stops a write before the database sees it. |
+| `PII masking refused this query: only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed in read_only mode (this is a DELETE)` | The same refusal one layer earlier — with masking on, the parser stops a write before the database sees it. |
 | `PII masking refused this query: a SELECT * inside a sub-query, join, or union can't be verified` | Masking can't trace `*` back to real columns. List them explicitly. |
 | `PII masking refused this query: could not parse it to verify masking` | The MySQL-dialect parser couldn't read the statement, usually MariaDB-only syntax. Rewrite it, or run that deployment without masking. |
 | A column comes back `"<masked>"` and shouldn't | A rule matched its name. Put the qualified column in `masking.except` — it beats `mask`. |

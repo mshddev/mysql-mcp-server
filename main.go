@@ -81,7 +81,7 @@ func main() {
 	probe, err := pool.acquire(probeCtx)
 	cancel()
 	if err != nil {
-		logger.Error("startup", "error", "database unreachable: "+err.Error())
+		logger.Error("startup", "error", describeConnectError(err))
 		os.Exit(1)
 	}
 	pool.release(probe, false)

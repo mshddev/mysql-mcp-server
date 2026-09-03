@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -337,6 +338,37 @@ func TestLabelAt(t *testing.T) {
 	// Out of range must yield a stable placeholder rather than panic.
 	if got := labelAt(labels, 2); got != "column_3" {
 		t.Errorf("labelAt(2) = %q, want %q", got, "column_3")
+	}
+}
+
+func TestDescribeConnectError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"wrong password", fmt.Errorf("handleAuthResult: %w",
+			mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, "mcp_readonly", "localhost", "YES")),
+			"database login refused: "},
+		{"no grant on the schema", mysql.NewDefaultError(mysql.ER_DBACCESS_DENIED_ERROR, "mcp_readonly", "localhost", "prod"),
+			"database login refused: "},
+		{"unknown database", mysql.NewDefaultError(mysql.ER_BAD_DB_ERROR, "nope"),
+			"database not found: "},
+		{"other server error", fmt.Errorf("session setup: %w", mysql.NewDefaultError(mysql.ER_UNKNOWN_ERROR)),
+			"database rejected the connection: "},
+		{"dial failure", errors.New("dial tcp 127.0.0.1:3307: connect: connection refused"),
+			"database unreachable: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := describeConnectError(tt.err)
+			if !strings.HasPrefix(got, tt.want) {
+				t.Fatalf("got %q, want prefix %q", got, tt.want)
+			}
+			if !strings.HasSuffix(got, tt.err.Error()) {
+				t.Fatalf("driver text was not kept verbatim: %q", got)
+			}
+		})
 	}
 }
 

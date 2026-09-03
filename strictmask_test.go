@@ -64,6 +64,8 @@ func TestPlanQuery(t *testing.T) {
 		{name: "table form is refused (MySQL 8 SELECT *)", sql: "TABLE users", wantErr: "TABLE or VALUES"},
 		{name: "values form is refused", sql: "VALUES ROW(1, 2)", wantErr: "TABLE or VALUES"},
 		{name: "non-select", sql: "INSERT INTO users (name) VALUES ('x')", wantErr: "only SELECT"},
+		{name: "refusal names the statement, not the Go type", sql: "DELETE FROM users", wantErr: "this is a DELETE"},
+		{name: "refusal names multi-word DDL", sql: "CREATE TABLE t (id INT)", wantErr: "this is a CREATE TABLE"},
 		{name: "unparseable", sql: "SELECT * FRM users", wantErr: "could not parse"},
 	}
 
