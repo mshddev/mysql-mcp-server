@@ -41,6 +41,10 @@ A few things to get right:
   on the same host doing TLS, with only the proxy's port open to the network
   (the README's Deploy section walks through it). Widen `listen` only on a
   private network you trust, knowing the token then crosses it in the clear.
+  The only paths that answer without the token are the health probes,
+  `/healthz` and `/readyz`, and they say up or down and nothing else; the
+  readiness one caches its database ping for five seconds so an anonymous
+  caller can't turn it into load.
 - **Use a strong, unique bearer token,** and rotate it if it leaks. It's the
   only thing between a caller and the data. There is one token per deployment
   today, shared by everyone who connects, so the query log records what ran but

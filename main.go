@@ -163,7 +163,7 @@ func main() {
 		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil, "version", version)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           bearerAuth(cfg.Server.AuthToken, handler),
+		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// Must outlive the query timeout or responses get cut off mid-write.

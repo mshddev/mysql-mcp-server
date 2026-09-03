@@ -161,7 +161,9 @@ curl gets rows back, an MCP client will too — wire one up under
   on MySQL a long-running write is stopped by the `KILL` alone; MariaDB's
   covers every statement except stored procedures.
 - **Connection pool** (default 10) — doubles as the concurrency brake.
-- **Bearer token** — checked on every request, compared in constant time.
+- **Bearer token** — checked on every request, compared in constant time. The
+  only exceptions are the two health probes, which reveal up or down and nothing
+  else (see [Deploy](#deploy)).
 
 ## Requirements
 
@@ -417,19 +419,28 @@ it by editing the env file and restarting the unit.
 verify, from a laptop:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://mysql-mcp.internal.example.com/mcp \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT 1"}}}'
+curl -s https://mysql-mcp.internal.example.com/readyz
 ```
 
-`200` means the whole path works: proxy, TLS, token, server, database. That
-same call is the readiness probe for a load balancer or uptime check, and it
-has to be a `tools/call`: `tools/list` answers `200` without touching the
-database. There is no dedicated health endpoint yet; for a liveness probe, any
-HTTP response from the port counts, including the `401` an unauthenticated
-request gets.
+`{"status":"ok"}` means the whole path works: proxy, TLS, server, database.
+Add the token and run the Quickstart's `tools/call` curl against the same host
+to prove the last step too.
+
+**Health checks.** Two paths answer a bare `GET` (or `HEAD`) with no token,
+which is what load balancers, container probes, and uptime monitors send:
+
+| Path | Answers | Use it for |
+|---|---|---|
+| `/healthz` | `200 {"status":"ok"}` as long as the process serves HTTP. Never touches the database. | Liveness: restart the process if this fails. |
+| `/readyz` | `200 {"status":"ok"}` when a database ping succeeds, `503 {"status":"degraded"}` when it doesn't. | Readiness: route traffic or page someone. |
+
+Startup already refuses to run without the database, so `/readyz` is for the
+database going away later; the server stays up and reports it here while every
+query fails. A result is cached for five seconds, so probing it in a loop costs
+the database one ping per five seconds no matter how many probers there are.
+The body says up or down and nothing else; the reason is in the server log as a
+`readiness` warning. Both paths return `405` to any other method, and every
+other path still requires the token.
 
 ## Connect a Client
 
@@ -437,8 +448,8 @@ Every agent points at the same server. A client needs three things:
 
 - **Endpoint** — the URL your deployment answers on, such as
   `https://mysql-mcp.internal.example.com/mcp`, or `http://127.0.0.1:3000/mcp`
-  for the Quickstart trial (any path on the port works; `/mcp` is the
-  convention)
+  for the Quickstart trial (any path works except the two health probes;
+  `/mcp` is the convention)
 - **Header** — `Authorization: Bearer <your token>`
 - **Tool** — `query`, one string argument, `sql`
 
@@ -535,7 +546,8 @@ config resolves and the database answers.
 | `database login refused: … ERROR 1044 (42000): Access denied for user … to database …` | The user has no grant on `database.dbname` — misspelled, or the `GRANT` named a different schema. |
 | `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
 | `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
-| `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST`; [Deploy](#deploy) has the probe to use for health checks. |
+| `405 Method Not Allowed` | You sent a `GET` to the MCP endpoint, or a `POST` to a health probe. MCP calls are `POST`; `/healthz` and `/readyz` are `GET`. |
+| `/readyz` says `degraded` | The database stopped answering after startup. The `readiness` warning in the server log has the driver's error. |
 | `502` or `504` from the proxy | `502`: the service is down, so check `systemctl status mysql-mcp-server`. `504`: the proxy's upstream timeout is shorter than `limits.timeout_seconds`. |
 | `curl: (60) SSL certificate problem` | The proxy is using a certificate your machine doesn't trust — `tls internal` or self-signed. Install its root CA, or give the proxy a certificate from a CA you already trust. |
 | `ERROR 1142 (42000): … command denied to user …` | Read-only doing its job: the grants refused a write. |
