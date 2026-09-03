@@ -16,8 +16,9 @@ decision before any public disclosure.
 
 ## Running It Safely
 
-This server hands an AI agent live SQL access, so the deployment matters as much
-as the code. A few things to get right:
+This server hands AI agents live SQL access, and it is meant to run as one
+shared service on the network, so the deployment matters as much as the code.
+A few things to get right:
 
 - **Use a `SELECT`-only user, scoped to one database.** Read-only is enforced by
   the database's grants first, and by `SET SESSION TRANSACTION READ ONLY` second.
@@ -35,10 +36,15 @@ as the code. A few things to get right:
   (Masking is best-effort everywhere, in truth: even read-only, values can be
   probed through `WHERE` conditions. Sanitize the data itself when you need a
   guarantee.)
-- **Bind to loopback unless you mean to expose it.** `listen: 127.0.0.1:3000` by
-  default; only widen it behind something you trust.
+- **The binary speaks plain HTTP, so terminate TLS in front of it.** It binds
+  `127.0.0.1:3000` by default on purpose: the expected shape is a reverse proxy
+  on the same host doing TLS, with only the proxy's port open to the network
+  (the README's Deploy section walks through it). Widen `listen` only on a
+  private network you trust, knowing the token then crosses it in the clear.
 - **Use a strong, unique bearer token,** and rotate it if it leaks. It's the
-  only thing between a caller and the data.
+  only thing between a caller and the data. There is one token per deployment
+  today, shared by everyone who connects, so the query log records what ran but
+  not who ran it; per-caller tokens are planned.
 - **Keep secrets in the environment,** not in `config.yaml`. The `${VAR}`
   placeholders exist for this — the token and password should never sit in a
   file in git.

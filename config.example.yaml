@@ -16,7 +16,9 @@
 mode: read_only
 
 server:
-  # Loopback by default; use ":3000" to expose on all interfaces (e.g. team VM).
+  # Loopback on purpose: a TLS-terminating reverse proxy on the same host
+  # fronts it (README, Deploy). ":3000" binds every interface; do that only on
+  # a private network you trust, since the token then travels in the clear.
   listen: "127.0.0.1:3000"
   auth_token: ${MYSQL_MCP_AUTH_TOKEN}
 

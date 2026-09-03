@@ -1,14 +1,19 @@
 # mysql-mcp-server
 
-> SQL access to MySQL/MariaDB for AI agents over MCP — read-only by default,
-> full access as an explicit opt-in.
+> SQL access to MySQL/MariaDB for AI agents over MCP. One server beside the
+> database, every agent on the team connects to it. Read-only by default, full
+> access as an explicit opt-in.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](go.mod)
 
-An MCP server that gives an AI agent a window into a MySQL or MariaDB
-database. It exposes a single tool — `query` — over streamable HTTP
-(MCP spec 2026-07-28, stateless), runs the SQL you send, and returns rows as
+An MCP server that gives AI agents a window into a MySQL or MariaDB database.
+It is built to run as a shared service, not as a subprocess: you deploy one
+instance on a host near the database, and every agent on the team points at its
+URL with a bearer token. The transport is streamable HTTP (MCP spec 2026-07-28,
+stateless). There is no stdio mode.
+
+It exposes a single tool, `query`, runs the SQL you send, and returns rows as
 JSON objects.
 
 The point is to let a coding agent (Claude Code, or anything that speaks MCP)
@@ -21,8 +26,11 @@ the agent may do — writes included.
 
 ## Quickstart
 
-Zero to a working server against a database you already have. You need Go 1.26+,
-a reachable MySQL or MariaDB, and enough access on it to create a user.
+Zero to a working server against a database you already have, all on one
+machine, so you can watch it answer before putting it on a host. You need a
+reachable MySQL or MariaDB and enough access on it to create a user. The team
+setup is under [Deploy](#deploy); the steps are the same, spread across two
+machines.
 
 **1. Create a read-only user.** As an admin, with your own database name and
 password:
@@ -99,7 +107,8 @@ curl -s -X POST http://127.0.0.1:3000/mcp \
 
 The reply is a server-sent-event `data:` line carrying the JSON-RPC result. If
 curl gets rows back, an MCP client will too — wire one up under
-[Connect a Client](#connect-a-client).
+[Connect a Client](#connect-a-client), then move the server to a host under
+[Deploy](#deploy).
 
 ## Safety Model
 
@@ -156,8 +165,11 @@ curl gets rows back, an MCP client will too — wire one up under
 
 ## Requirements
 
-- Go 1.26 or newer
 - A reachable MySQL or MariaDB
+- A host to run it on, near the database, plus a reverse proxy to terminate TLS
+  in front of it. The [Quickstart](#quickstart) skips both and runs on your
+  laptop; [Deploy](#deploy) covers them.
+- Go 1.26 or newer, only if you build from source
 - A `SELECT`-only database user (or, for `full_access`, a user whose grants say
   exactly what the agent may do) — [Quickstart](#quickstart) has the `GRANT`,
   and `seed/seed.sql` a throwaway database to try it against
@@ -224,7 +236,7 @@ unset variable is a startup error naming it, never a silent empty string:
 mode: read_only                # or full_access: writes allowed, grants are the fence
 
 server:
-  listen: "127.0.0.1:3000"     # loopback by default; ":3000" exposes on all interfaces
+  listen: "127.0.0.1:3000"     # loopback on purpose; a reverse proxy fronts it (see Deploy)
   auth_token: ${MYSQL_MCP_AUTH_TOKEN}
 
 database:
@@ -252,7 +264,7 @@ masking:                # optional; omit the section to run without masking
 | Key | Meaning |
 |---|---|
 | `mode` | `read_only` (default) or `full_access`. See [Safety Model](#safety-model). |
-| `server.listen` | Address to bind. Loopback by default. |
+| `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. |
 | `server.auth_token` | Bearer token clients must present. |
 | `database.host` / `port` | Where the database lives. |
 | `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
@@ -295,16 +307,143 @@ file` writes them to a log file instead, rotated by size with configurable
 retention (see `config.example.yaml`). A log file that can't be created or
 written fails startup rather than running silent.
 
+## Deploy
+
+One instance, on a host near the database, shared by everyone's agents. The
+binary binds to loopback and speaks plain HTTP, so a deployment has three
+parts: the binary, a reverse proxy on the same host terminating TLS in front of
+it, and a firewall that lets only the proxy's port through.
+
+**1. Install on the host.** The installer from [Install](#install) works there
+too, run as root so the binary lands in `/usr/local/bin`, where the unit below
+expects it (it never calls `sudo` itself, and would otherwise fall back to
+`~/.local/bin`). Then give the service its own user, put the config in place,
+and keep the two secrets in an env file only that user can read:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/install.sh | sudo sh
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin mysql-mcp
+sudo install -d -m 750 -o root -g mysql-mcp /etc/mysql-mcp-server
+sudo curl -fsSL -o /etc/mysql-mcp-server/config.yaml \
+  https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/config.example.yaml
+sudo tee /etc/mysql-mcp-server/env > /dev/null <<EOF
+MYSQL_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+MYSQL_PASSWORD=a-strong-password
+EOF
+sudo chmod 640 /etc/mysql-mcp-server/env
+sudo chgrp mysql-mcp /etc/mysql-mcp-server/env
+```
+
+Edit `config.yaml` as in the Quickstart. Leave `listen` at `127.0.0.1:3000`;
+the proxy is what faces the network.
+
+**2. Run it under systemd.** Save as `/etc/systemd/system/mysql-mcp-server.service`:
+
+```ini
+[Unit]
+Description=mysql-mcp-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mysql-mcp
+EnvironmentFile=/etc/mysql-mcp-server/env
+ExecStart=/usr/local/bin/mysql-mcp-server --config /etc/mysql-mcp-server/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Uncomment with logging.output: file, and match logging.file's directory.
+# ReadWritePaths=/var/log/mysql-mcp-server
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mysql-mcp-server
+```
+
+verify:
+
+```bash
+journalctl -u mysql-mcp-server -n 20
+```
+
+The `startup` line from the Quickstart is in there. With `logging.output:
+stdout` (the default) journald keeps the query log; `journalctl -u
+mysql-mcp-server -f` follows it. If the unit is restart-looping instead, the
+error is in the same place: startup refuses to listen until the config resolves
+and the database answers, and `Restart=on-failure` keeps retrying every five
+seconds.
+
+**3. Terminate TLS in front.** Any reverse proxy works. With
+[Caddy](https://caddyserver.com), the whole `Caddyfile` is:
+
+```
+mysql-mcp.internal.example.com {
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+Caddy fetches a public certificate on its own when the name resolves publicly.
+For a name that only resolves inside your network, either hand it your own
+certificate with `tls cert.pem key.pem`, or add `tls internal` and install
+Caddy's root CA on every laptop that will connect.
+
+Two things any proxy has to get right. Its upstream timeout must exceed
+`limits.timeout_seconds` with room to spare, or a slow query comes back as a
+`504` instead of a result. And it must not buffer `text/event-stream`
+responses. Caddy does both out of the box; nginx needs `proxy_read_timeout`
+raised and `proxy_buffering off`.
+
+**4. Open only the proxy's port.** `443` in, from wherever the agents run.
+`3000` stays on loopback and never appears in a firewall rule.
+
+If the host is already on a private network you trust (a VPC, a VPN, a
+Tailscale tailnet), you can skip the proxy: set `listen: ":3000"` and let
+clients use `http://` on that network. The token then crosses that network in
+the clear, so make that call deliberately.
+
+**5. Hand out the URL and the token.** The token is the one step 1 wrote to
+`/etc/mysql-mcp-server/env`. Everyone gets the same two values, and
+[Connect a Client](#connect-a-client) shows where they go. There is one token
+per deployment, so the query log tells you what ran but not who ran it; rotate
+it by editing the env file and restarting the unit.
+
+verify, from a laptop:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://mysql-mcp.internal.example.com/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT 1"}}}'
+```
+
+`200` means the whole path works: proxy, TLS, token, server, database. That
+same call is the readiness probe for a load balancer or uptime check, and it
+has to be a `tools/call`: `tools/list` answers `200` without touching the
+database. There is no dedicated health endpoint yet; for a liveness probe, any
+HTTP response from the port counts, including the `401` an unauthenticated
+request gets.
+
 ## Connect a Client
 
-The transport is **streamable HTTP only — there is no stdio mode**, so a client
-that only launches subprocesses can't talk to this. Everything else needs three
-things:
+Every agent points at the same server. A client needs three things:
 
-- **Endpoint** — `http://localhost:3000/mcp` (any path on the port works; `/mcp`
-  is the convention)
+- **Endpoint** — the URL your deployment answers on, such as
+  `https://mysql-mcp.internal.example.com/mcp`, or `http://127.0.0.1:3000/mcp`
+  for the Quickstart trial (any path on the port works; `/mcp` is the
+  convention)
 - **Header** — `Authorization: Bearer <your token>`
 - **Tool** — `query`, one string argument, `sql`
+
+The transport is **streamable HTTP only — there is no stdio mode**, so a client
+that only launches subprocesses can't talk to this.
 
 The server is stateless, so there is no session handshake to do first: a client
 can call `tools/list` or `tools/call` cold, which is also why the curl in
@@ -319,7 +458,7 @@ expansion:
 {
   "mcpServers": {
     "mysql": {
-      "url": "http://localhost:3000/mcp",
+      "url": "https://mysql-mcp.internal.example.com/mcp",
       "type": "http",
       "headers": {
         "Authorization": "Bearer ${MYSQL_MCP_AUTH_TOKEN}"
@@ -329,9 +468,11 @@ expansion:
 }
 ```
 
-Export `MYSQL_MCP_AUTH_TOKEN` in your shell profile — the same value the server
-runs with — then restart Claude Code and ask a data question. The agent will use
-`SHOW TABLES` / `DESCRIBE` to find its way around, then `SELECT`.
+Commit that file and everyone on the repo gets the same server; the token comes
+from each person's shell. Export `MYSQL_MCP_AUTH_TOKEN` in your shell profile —
+the same value the server runs with — then restart Claude Code and ask a data
+question. The agent will use `SHOW TABLES` / `DESCRIBE` to find its way around,
+then `SELECT`.
 
 ### Other clients
 
@@ -394,7 +535,9 @@ config resolves and the database answers.
 | `database login refused: … ERROR 1044 (42000): Access denied for user … to database …` | The user has no grant on `database.dbname` — misspelled, or the `GRANT` named a different schema. |
 | `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
 | `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
-| `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST` — including the health check you were probably reaching for, which doesn't exist. |
+| `405 Method Not Allowed` | You sent a `GET`. Every call is a `POST`; [Deploy](#deploy) has the probe to use for health checks. |
+| `502` or `504` from the proxy | `502`: the service is down, so check `systemctl status mysql-mcp-server`. `504`: the proxy's upstream timeout is shorter than `limits.timeout_seconds`. |
+| `curl: (60) SSL certificate problem` | The proxy is using a certificate your machine doesn't trust — `tls internal` or self-signed. Install its root CA, or give the proxy a certificate from a CA you already trust. |
 | `ERROR 1142 (42000): … command denied to user …` | Read-only doing its job: the grants refused a write. |
 | `PII masking refused this query: only SELECT/SHOW/DESCRIBE/EXPLAIN are allowed in read_only mode (this is a DELETE)` | The same refusal one layer earlier — with masking on, the parser stops a write before the database sees it. |
 | `PII masking refused this query: a SELECT * inside a sub-query, join, or union can't be verified` | Masking can't trace `*` back to real columns. List them explicitly. |
