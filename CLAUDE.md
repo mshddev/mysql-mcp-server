@@ -1,5 +1,5 @@
 # About This Project
-MCP server for MySQL/MariaDB that basically just runs raw SQL against MySQL/MariaDB then give the results back in json format.
+MCP server for MySQL/MariaDB: runs raw SQL against MySQL/MariaDB then give the results back in json format.
 Remote-first: one instance runs near the database over streamable HTTP with a bearer token, and a team's agents connect to its URL. There is no stdio transport, and the docs should never imply one.
 
 # Commands

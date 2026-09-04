@@ -1,28 +1,23 @@
 # mysql-mcp-server
 
-> SQL access to MySQL/MariaDB for AI agents over MCP. One server beside the
-> database, every agent on the team connects to it. Read-only by default, full
+> Give AI agents access to MySQL/MariaDB over MCP. One server beside the
+> database, every agent on the team connects to it. Support PII masking. Read-only by default, full
 > access as an explicit opt-in.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](go.mod)
 
-An MCP server that gives AI agents a window into a MySQL or MariaDB database.
+An MCP server that gives AI agents access to MySQL/MariaDB database.
 It is built to run as a shared service, not as a subprocess: you deploy one
 instance on a host near the database, and every agent on the team points at its
-URL with a bearer token. The transport is streamable HTTP (MCP spec 2026-07-28,
+(with a bearer token). The transport is streamable HTTP (MCP spec 2026-07-28,
 stateless). There is no stdio mode.
 
 It exposes a single tool, `query`, runs the SQL you send, and returns rows as
 JSON objects.
 
 The point is to let a coding agent (Claude Code, or anything that speaks MCP)
-answer real data questions and explore a schema — without the risk of it
-writing, dropping a table, or dragging a whole dataset across the wire. In the
-default `read_only` mode that safety is enforced by the database, not by
-parsing your SQL. For disposable environments like staging, `mode: full_access`
-drops the server-side write block and lets the MySQL user's grants decide what
-the agent may do — writes included.
+answer real data questions and explore a schema — and with masking enabled, prevent PII data enters agent context window.
 
 ## Quickstart
 
