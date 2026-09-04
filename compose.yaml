@@ -1,0 +1,36 @@
+# Throwaway database for local development and the integration tests.
+# Works with `docker compose` and `podman compose` (Podman needs podman-compose
+# on PATH). The seed runs once, on first start; see CONTRIBUTING.md for how to
+# re-seed.
+#
+#   docker compose up -d --wait
+#   MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
+#
+# If 3306 is already taken on your machine, set MYSQL_DEV_PORT. To test against
+# a different engine, set MYSQL_DEV_IMAGE (e.g. mysql:8.4); the seed and the
+# tests accommodate both MySQL and MariaDB.
+services:
+  db:
+    image: ${MYSQL_DEV_IMAGE:-mariadb:10.11}
+    ports:
+      - "${MYSQL_DEV_PORT:-3306}:3306"
+    environment:
+      # Root has no password; the database only ever holds seed/seed.sql. The
+      # seed creates the mcp_dev schema and the mcp_readonly / mcp_write users
+      # itself, so no MARIADB_DATABASE / MARIADB_USER here.
+      MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "1"
+      MYSQL_ALLOW_EMPTY_PASSWORD: "1"
+    volumes:
+      # The image runs every *.sql in this directory once, when the data
+      # directory is empty. `z` relabels for SELinux hosts (rootless Podman on
+      # Fedora); other hosts ignore it.
+      - ./seed/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro,z
+    healthcheck:
+      # Both images run the seed on a socket-only temporary server, so a TCP
+      # ping only succeeds once the real server is up with the seed applied.
+      # mariadb-admin for the MariaDB image (its mysql* names are deprecated),
+      # mysqladmin for the MySQL one.
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 --silent || mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

@@ -558,9 +558,16 @@ config resolves and the database answers.
 
 ## Local Development
 
-Seed a throwaway database — a couple of tables, fake rows, a `SELECT`-only
+Start a throwaway database — a couple of tables, fake rows, a `SELECT`-only
 user (`mcp_readonly`), and a full-access user (`mcp_write`) for exercising
-`full_access` mode — into a local MySQL/MariaDB:
+`full_access` mode. `compose.yaml` runs MariaDB in a container with
+`seed/seed.sql` applied:
+
+```bash
+docker compose up -d --wait      # or: podman compose up -d --wait
+```
+
+Or seed a MySQL/MariaDB you already have:
 
 ```bash
 mysql -h 127.0.0.1 -u root < seed/seed.sql
@@ -586,7 +593,8 @@ MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
 ```
 
 Override the credentials with `MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD` and
-`MYSQL_TEST_DATABASE` if yours differ from the seed.
+`MYSQL_TEST_DATABASE` if yours differ from the seed. CONTRIBUTING.md covers
+re-seeding, changing the port, and running against MySQL instead of MariaDB.
 
 ## Contributing
 

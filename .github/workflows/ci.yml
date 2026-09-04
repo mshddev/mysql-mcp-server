@@ -31,8 +31,33 @@ jobs:
       - name: build
         run: go build ./...
 
-      # Integration tests self-skip without MYSQL_TEST_ADDR, so this is the
-      # unit suite only. Run the integration ones locally against a seeded
-      # database — see CONTRIBUTING.md.
-      - name: test
+      - name: unit tests
         run: go test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["mariadb:10.11", "mysql:8.4"]
+    env:
+      MYSQL_DEV_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The same compose.yaml contributors use locally; the seed is applied
+      # on first start and --wait blocks on the healthcheck until it has run.
+      - name: start seeded database
+        run: docker compose up -d --wait
+
+      - name: integration tests
+        run: MYSQL_TEST_ADDR=127.0.0.1:3306 go test -count=1 ./...
+
+      - name: database logs
+        if: failure()
+        run: docker compose logs db

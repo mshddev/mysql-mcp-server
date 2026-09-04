@@ -10,7 +10,8 @@ go vet ./...                          # static checks (no other lint configured)
 go test ./...                         # unit tests; integration tests self-skip
 go test -run TestName .               # single test
 MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...   # also run integration tests
-mysql -h 127.0.0.1 -u root < seed/seed.sql     # seed the local dev database
+docker compose up -d --wait                    # seeded dev DB in a container (podman compose works too)
+mysql -h 127.0.0.1 -u root < seed/seed.sql     # or seed a local MySQL/MariaDB yourself
 MYSQL_MCP_AUTH_TOKEN=... MYSQL_PASSWORD=... ./mysql-mcp-server --config ./config.yaml
 ```
 

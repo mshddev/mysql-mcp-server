@@ -435,6 +435,24 @@ func testConfig(t *testing.T) *Config {
 	return cfg
 }
 
+// sessionVars is the server's spelling of the two fences setupSession sets.
+// MariaDB has tx_read_only and max_statement_time (seconds); MySQL 8 has
+// transaction_read_only and max_execution_time (milliseconds).
+type sessionVars struct {
+	readOnly  string
+	timeout   string
+	perSecond int // timeout units in one second
+}
+
+func serverVars(t *testing.T, p *Pool) sessionVars {
+	t.Helper()
+	res := mustQuery(t, p, "SELECT VERSION() AS v")
+	if strings.Contains(strings.ToLower(fmt.Sprint(res.Rows[0]["v"])), "mariadb") {
+		return sessionVars{readOnly: "tx_read_only", timeout: "max_statement_time", perSecond: 1}
+	}
+	return sessionVars{readOnly: "transaction_read_only", timeout: "max_execution_time", perSecond: 1000}
+}
+
 // newTestPool builds a pool from testConfig, letting the caller adjust the
 // limits, and closes any pooled connections when the test ends.
 func newTestPool(t *testing.T, adjust func(*Config)) *Pool {
@@ -698,17 +716,18 @@ func TestSessionStateIsolation(t *testing.T) {
 		cfg.Limits.TimeoutSeconds = timeout
 	})
 
+	vars := serverVars(t, p)
 	checkFences := func(t *testing.T, when string) {
 		t.Helper()
-		res := mustQuery(t, p, "SELECT @@session.tx_read_only AS ro, @@session.max_statement_time AS mst")
+		res := mustQuery(t, p, fmt.Sprintf("SELECT @@session.%s AS ro, @@session.%s AS mst", vars.readOnly, vars.timeout))
 		if len(res.Rows) != 1 {
 			t.Fatalf("%s: got %d rows, want 1", when, len(res.Rows))
 		}
 		if ro := asNumber(t, res.Rows[0]["ro"]); ro != 1 {
-			t.Errorf("%s: tx_read_only = %v, want 1", when, ro)
+			t.Errorf("%s: %s = %v, want 1", when, vars.readOnly, ro)
 		}
-		if mst := asNumber(t, res.Rows[0]["mst"]); mst != timeout {
-			t.Errorf("%s: max_statement_time = %v, want %d", when, mst, timeout)
+		if mst, want := asNumber(t, res.Rows[0]["mst"]), float64(timeout*vars.perSecond); mst != want {
+			t.Errorf("%s: %s = %v, want %v", when, vars.timeout, mst, want)
 		}
 	}
 
@@ -727,7 +746,7 @@ func TestSessionStateIsolation(t *testing.T) {
 	// Now poison the session through the same entry point a caller would use.
 	poison := []string{
 		"SET SESSION TRANSACTION READ WRITE",
-		"SET SESSION max_statement_time=0",
+		"SET SESSION " + vars.timeout + "=0",
 	}
 	for _, sql := range poison {
 		res, err := query(t, p, sql)
@@ -752,10 +771,15 @@ func TestSessionStateIsolation(t *testing.T) {
 }
 
 func TestQueryTimeoutKills(t *testing.T) {
-	// The server-side max_statement_time fence and the client-side deadline
+	// The server-side statement-timeout fence and the client-side deadline
 	// both fire at the configured timeout, so with equal values it is a
 	// coin flip which one wins. Keeping the server fence well above the
 	// context deadline makes this test about the client-side KILL.
+	//
+	// The slow statement is a runaway cross join rather than SLEEP(): MySQL
+	// answers a killed SLEEP() with a normal resultset (SLEEP returns 1),
+	// whereas an interrupted join errors on both engines. The SUM keeps MySQL
+	// from folding a bare COUNT(*) into a product of table sizes.
 	p := newTestPool(t, func(cfg *Config) {
 		cfg.Limits.MaxConnections = 1
 		cfg.Limits.TimeoutSeconds = 20
@@ -765,7 +789,7 @@ func TestQueryTimeoutKills(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	res, err := p.Query(ctx, "SELECT SLEEP(10)")
+	res, err := p.Query(ctx, "SELECT SUM(a.id * b.id * c.id) FROM big a, big b, big c")
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -852,9 +876,10 @@ func TestSemaphoreLimitsConcurrency(t *testing.T) {
 
 func TestOKPacketStatements(t *testing.T) {
 	p := newTestPool(t, func(cfg *Config) { cfg.Limits.MaxConnections = 1 })
+	vars := serverVars(t, p)
 
 	tests := []string{
-		"SET SESSION max_statement_time=5",
+		"SET SESSION " + vars.timeout + "=5",
 		"SET @mcp_test_var = 1",
 		"DO 1",
 		"DO SLEEP(0)",
@@ -896,10 +921,11 @@ func TestQueryRejectsWrites(t *testing.T) {
 
 func TestFullAccessSessionSetup(t *testing.T) {
 	p := newTestPool(t, func(cfg *Config) { cfg.Mode = modeFullAccess })
+	vars := serverVars(t, p)
 
-	res := mustQuery(t, p, "SELECT @@session.tx_read_only AS ro")
+	res := mustQuery(t, p, "SELECT @@session."+vars.readOnly+" AS ro")
 	if ro := asNumber(t, res.Rows[0]["ro"]); ro != 0 {
-		t.Errorf("tx_read_only = %v, want 0 in full_access mode", ro)
+		t.Errorf("%s = %v, want 0 in full_access mode", vars.readOnly, ro)
 	}
 }
 
