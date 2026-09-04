@@ -102,6 +102,17 @@ func main() {
 		}
 	}
 
+	if cfg.tlsUnverified() {
+		const msg = "database TLS is encrypted but unverified (database.tls.insecure_skip_verify)"
+		const detail = "the connection resists eavesdropping, not impersonation; " +
+			"anyone on the path who answers as the database is trusted"
+		warn := slog.New(slog.NewJSONHandler(cfg.console(), nil))
+		warn.Warn(msg, "detail", detail)
+		if cfg.Logging.Output != "stdout" {
+			logger.Warn(msg, "detail", detail)
+		}
+	}
+
 	pool := NewPool(cfg)
 	// Fail fast if the database is unreachable or the session setup is rejected.
 	probeCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
@@ -117,7 +128,7 @@ func main() {
 
 	if cfg.stdio() {
 		logger.Info("startup", "transport", transportStdio, "database",
-			cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
+			cfg.Database.Host, "tls", cfg.tlsOn(), "mode", cfg.Mode, "masking", cfg.masker != nil,
 			"masking_values", cfg.masker.scansValues(), "version", version)
 		// Run returns nil when the client closes our stdin, which is how a
 		// stdio session normally ends: the client is done with us.
@@ -135,7 +146,7 @@ func main() {
 	)
 
 	logger.Info("startup", "transport", transportHTTP, "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
+		cfg.Database.Host, "tls", cfg.tlsOn(), "mode", cfg.Mode, "masking", cfg.masker != nil,
 		"masking_values", cfg.masker.scansValues(), "version", version)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,

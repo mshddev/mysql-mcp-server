@@ -74,4 +74,12 @@ ALTER USER 'mcp_write'@'%' IDENTIFIED BY 'devpassword';
 ALTER USER 'mcp_write'@'localhost' IDENTIFIED BY 'devpassword';
 GRANT ALL PRIVILEGES ON mcp_dev.* TO 'mcp_write'@'%';
 GRANT ALL PRIVILEGES ON mcp_dev.* TO 'mcp_write'@'localhost';
+
+-- Mutual-TLS user for the database.tls.cert / key tests: the grant demands a
+-- client certificate signed by the CA the server trusts, which compose.yaml
+-- points at seed/tls/ca.pem. ALTER repeats the requirement so a re-seed over
+-- an existing user (CREATE ... IF NOT EXISTS skips it) can't quietly drop it.
+CREATE USER IF NOT EXISTS 'mcp_x509'@'%' IDENTIFIED BY 'devpassword' REQUIRE X509;
+ALTER USER 'mcp_x509'@'%' REQUIRE X509;
+GRANT SELECT ON mcp_dev.* TO 'mcp_x509'@'%';
 FLUSH PRIVILEGES;

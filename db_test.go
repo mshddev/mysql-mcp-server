@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"math"
@@ -358,6 +360,21 @@ func TestDescribeConnectError(t *testing.T) {
 			"database rejected the connection: "},
 		{"dial failure", errors.New("dial tcp 127.0.0.1:3307: connect: connection refused"),
 			"database unreachable: "},
+		{"server requires TLS", mysql.NewDefaultError(erSecureTransportRequired),
+			"database requires TLS (set database.tls.enabled: true): "},
+		{"server has no TLS", errors.New("the MySQL Server does not support TLS required by the client"),
+			"database does not offer TLS but database.tls is on: "},
+		{"certificate for another name", fmt.Errorf("handshake: %w",
+			x509.HostnameError{Certificate: &x509.Certificate{}, Host: "10.0.1.5"}),
+			"database certificate is not for this host (set database.tls.server_name"},
+		{"unknown CA", x509.UnknownAuthorityError{Cert: &x509.Certificate{}},
+			"database certificate is signed by a CA this server doesn't trust (point database.tls.ca"},
+		{"expired certificate", x509.CertificateInvalidError{Cert: &x509.Certificate{}, Reason: x509.Expired},
+			"database certificate rejected: "},
+		{"plaintext where TLS was expected", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"},
+			"database certificate rejected: "},
+		{"handshake alert", errors.New("remote error: tls: certificate required"),
+			"database TLS handshake failed: "},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +42,9 @@ type Config struct {
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
 		DBName   string `yaml:"dbname"`
+		// TLS is opt-in per deployment: an absent section means plaintext,
+		// which is what a database on the same host or VPC wants.
+		TLS *DatabaseTLS `yaml:"tls"`
 	} `yaml:"database"`
 	Limits struct {
 		TimeoutSeconds   int `yaml:"timeout_seconds"`
@@ -66,6 +71,10 @@ type Config struct {
 	transport string
 	// masker is derived from Masking at load time; nil when masking is off.
 	masker *Masker
+	// tlsConfig is derived from Database.TLS at load time; nil means
+	// plaintext. The files it names are read here, so a bad path is a
+	// startup error naming the key rather than a failed dial later.
+	tlsConfig *tls.Config
 	// logLevel is derived from Logging.Level at load time.
 	logLevel slog.Level
 }
@@ -79,6 +88,91 @@ type MaskingConfig struct {
 	// Values names the shape detectors (email, phone_id) that scan string
 	// cells the column rules left alone. Omitted means no value scanning.
 	Values []string `yaml:"values"`
+}
+
+// DatabaseTLS encrypts the hop from this server to the database. It only
+// asks: the database has to offer TLS, and the driver has no "try TLS, then
+// plaintext" mode, so a database without it is a refused connection, never a
+// silent downgrade.
+type DatabaseTLS struct {
+	// Enabled is a pointer so "omitted" is distinguishable from "false":
+	// omitted with any other key present means true.
+	Enabled *bool `yaml:"enabled"`
+	// CA is a PEM file with the certificate(s) that signed the database's.
+	// Empty means the system trust store, which covers databases behind a
+	// public CA.
+	CA string `yaml:"ca"`
+	// ServerName is the name to verify the certificate against when it isn't
+	// database.host — a certificate issued for db.internal reached over an
+	// IP, say. Defaults to database.host.
+	ServerName string `yaml:"server_name"`
+	// Cert and Key are the PEM client certificate and private key for mutual
+	// TLS, for a database user granted with REQUIRE X509. Both or neither.
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
+	// InsecureSkipVerify keeps the encryption and drops the identity check.
+	// A spelled-out choice, because a certificate without a usable name (the
+	// one MySQL generates for itself, for instance) can't be verified at all.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+}
+
+// on reports whether the section asks for TLS at all.
+func (t *DatabaseTLS) on() bool {
+	if t == nil {
+		return false
+	}
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+	return true
+}
+
+// newTLSConfig builds the driver's TLS config from the section, reading the
+// files it names. host is the default name to verify against.
+func newTLSConfig(t *DatabaseTLS, host string) (*tls.Config, error) {
+	if !t.on() {
+		return nil, nil
+	}
+	if t.Enabled == nil && t.CA == "" && t.ServerName == "" && t.Cert == "" && t.Key == "" && !t.InsecureSkipVerify {
+		// "tls: {}" says TLS while choosing nothing about it — a
+		// misconfiguration, not a choice, same as an empty masking section.
+		return nil, fmt.Errorf("database.tls has no settings: write enabled: true to verify against the system trust store, or drop the section")
+	}
+	if (t.Cert == "") != (t.Key == "") {
+		return nil, fmt.Errorf("database.tls.cert and database.tls.key go together (mutual TLS needs both)")
+	}
+	if t.InsecureSkipVerify && (t.CA != "" || t.ServerName != "") {
+		// Go ignores both under InsecureSkipVerify; a config that names them
+		// anyway would promise a check that never runs.
+		return nil, fmt.Errorf("database.tls.insecure_skip_verify disables the certificate check, so database.tls.ca and database.tls.server_name have no effect — drop them or drop it")
+	}
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         host,
+		InsecureSkipVerify: t.InsecureSkipVerify,
+	}
+	if t.ServerName != "" {
+		cfg.ServerName = t.ServerName
+	}
+	if t.CA != "" {
+		pem, err := os.ReadFile(t.CA)
+		if err != nil {
+			return nil, fmt.Errorf("database.tls.ca: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("database.tls.ca: no certificates found in %s (expected PEM)", t.CA)
+		}
+		cfg.RootCAs = pool
+	}
+	if t.Cert != "" {
+		pair, err := tls.LoadX509KeyPair(t.Cert, t.Key)
+		if err != nil {
+			return nil, fmt.Errorf("database.tls.cert / database.tls.key: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{pair}
+	}
+	return cfg, nil
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
@@ -119,6 +213,9 @@ func LoadConfig(path, transport string) (*Config, error) {
 		&cfg.Database.Host, &cfg.Database.Username,
 		&cfg.Database.Password, &cfg.Database.DBName,
 		&cfg.Logging.File,
+	}
+	if t := cfg.Database.TLS; t != nil {
+		expand = append(expand, &t.CA, &t.ServerName, &t.Cert, &t.Key)
 	}
 	if !cfg.stdio() {
 		expand = append(expand, &cfg.Server.Listen, &cfg.Server.AuthToken)
@@ -167,6 +264,9 @@ func LoadConfig(path, transport string) (*Config, error) {
 		return nil, fmt.Errorf("logging.rotation needs max_size_mb of at least 1 and no negative values (max_size_mb=%d, max_backups=%d, max_age_days=%d)",
 			r.MaxSizeMB, r.MaxBackups, r.MaxAgeDays)
 	}
+	if cfg.tlsConfig, err = newTLSConfig(cfg.Database.TLS, cfg.Database.Host); err != nil {
+		return nil, err
+	}
 	if cfg.masker, err = NewMasker(cfg.Masking); err != nil {
 		return nil, err
 	}
@@ -184,6 +284,12 @@ func LoadConfig(path, transport string) (*Config, error) {
 func (c *Config) fullAccess() bool { return c.Mode == modeFullAccess }
 
 func (c *Config) stdio() bool { return c.transport == transportStdio }
+
+// tlsOn reports whether connections to the database are encrypted.
+func (c *Config) tlsOn() bool { return c.tlsConfig != nil }
+
+// tlsUnverified reports the encrypt-only setting: TLS on, identity check off.
+func (c *Config) tlsUnverified() bool { return c.tlsConfig != nil && c.tlsConfig.InsecureSkipVerify }
 
 // console is where output meant for a terminal or a log collector goes:
 // stdout normally, stderr under stdio, where stdout is the wire the MCP

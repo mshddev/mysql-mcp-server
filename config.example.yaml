@@ -1,8 +1,8 @@
 # Copy to config.yaml (gitignored) and adjust per environment.
 # ${VAR} placeholders are filled from the environment. They work in every
 # text setting the server reads that way — listen, auth_token, host,
-# username, password, dbname and logging.file — not just the two secrets
-# below. An unset variable is a startup error naming it, never a silent
+# username, password, dbname, the tls paths and logging.file — not just the
+# two secrets below. An unset variable is a startup error naming it, never a silent
 # empty string.
 # These defaults point at a local dev database seeded via seed/seed.sql.
 
@@ -31,6 +31,25 @@ database:
   username: mcp_readonly
   password: ${MYSQL_PASSWORD}
   dbname: mcp_dev
+  # Encrypt this hop. Off when the section is absent, which is right for a
+  # database on the same host or private network. Turn it on for a managed
+  # database (RDS, Cloud SQL, PlanetScale) or one reached across a network
+  # you don't control. The database has to offer TLS: there is no fallback to
+  # plaintext, so a database without it is a refused connection at startup.
+  # With it on, the certificate is verified unless you say otherwise.
+  # tls:
+  #   enabled: true
+  #   ca: /etc/mysql-mcp-server/db-ca.pem   # the CA that signed the database's
+  #                                          # certificate; omit for a public CA
+  #   server_name: db.internal              # the name on the certificate, when
+  #                                          # host above is an IP or an alias
+  #   cert: /etc/mysql-mcp-server/client.pem  # mutual TLS, for a user granted
+  #   key: /etc/mysql-mcp-server/client-key.pem  # with REQUIRE X509; both or neither
+  #   insecure_skip_verify: true            # encrypt but don't check who answers.
+  #                                          # The only option for the certificate
+  #                                          # MySQL/MariaDB generate for themselves
+  #                                          # (no SAN, so unverifiable); warns at
+  #                                          # startup. Excludes ca and server_name.
 
 # Guardrails on a single call. All three must be at least 1.
 limits:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -648,5 +649,181 @@ func TestLoadConfigUnknownTransport(t *testing.T) {
 	_, err := LoadConfig(writeConfig(t, validConfig), "websocket")
 	if err == nil || !strings.Contains(err.Error(), "transport") {
 		t.Errorf("err = %v, want it to mention transport", err)
+	}
+}
+
+func TestLoadConfigTLS(t *testing.T) {
+	certs := writeTestCerts(t)
+	tests := []struct {
+		name  string
+		setup func(*testing.T)
+		body  string
+		// check inspects the derived tls.Config; nil means expect plaintext.
+		check   func(t *testing.T, cfg *Config)
+		wantErr []string
+	}{
+		{name: "absent section is plaintext", body: validConfig, check: nil},
+		{name: "null section is plaintext", body: validConfig + "  tls:\n", check: nil},
+		{
+			// Says "tls" while choosing nothing: a misconfiguration, like
+			// "masking: {}".
+			name:    "empty section is an error",
+			body:    validConfig + "  tls: {}\n",
+			wantErr: []string{"database.tls has no settings", "enabled: true"},
+		},
+		{
+			name: "enabled true alone is a choice",
+			body: validConfig + "  tls: {enabled: true}\n",
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.tlsConfig.RootCAs != nil {
+					t.Error("want system roots")
+				}
+			},
+		},
+		{
+			name: "enabled false is plaintext even with a CA",
+			body: validConfig + "  tls:\n    enabled: false\n    ca: " + certs.ca + "\n",
+		},
+		{
+			name: "enabled alone verifies against system roots and the host",
+			body: validConfig + "  tls:\n    enabled: true\n",
+			check: func(t *testing.T, cfg *Config) {
+				tc := cfg.tlsConfig
+				if tc.RootCAs != nil || tc.InsecureSkipVerify || len(tc.Certificates) != 0 {
+					t.Errorf("want bare verifying config, got %+v", tc)
+				}
+				if tc.ServerName != "127.0.0.1" {
+					t.Errorf("ServerName = %q, want database.host", tc.ServerName)
+				}
+				if tc.MinVersion != tls.VersionTLS12 {
+					t.Errorf("MinVersion = %d, want TLS 1.2", tc.MinVersion)
+				}
+			},
+		},
+		{
+			name: "a CA without enabled turns it on",
+			body: validConfig + "  tls:\n    ca: " + certs.ca + "\n",
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.tlsConfig.RootCAs == nil {
+					t.Error("RootCAs not set from database.tls.ca")
+				}
+			},
+		},
+		{
+			name: "server_name overrides the host",
+			body: validConfig + "  tls:\n    server_name: db.internal\n",
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.tlsConfig.ServerName != "db.internal" {
+					t.Errorf("ServerName = %q", cfg.tlsConfig.ServerName)
+				}
+			},
+		},
+		{
+			name: "client cert and key load as a pair",
+			body: validConfig + "  tls:\n    cert: " + certs.cert + "\n    key: " + certs.key + "\n",
+			check: func(t *testing.T, cfg *Config) {
+				if len(cfg.tlsConfig.Certificates) != 1 {
+					t.Errorf("Certificates = %d, want 1", len(cfg.tlsConfig.Certificates))
+				}
+			},
+		},
+		{
+			name: "insecure_skip_verify alone is allowed",
+			body: validConfig + "  tls:\n    insecure_skip_verify: true\n",
+			check: func(t *testing.T, cfg *Config) {
+				if !cfg.tlsConfig.InsecureSkipVerify || !cfg.tlsUnverified() {
+					t.Error("InsecureSkipVerify not carried through")
+				}
+			},
+		},
+		{
+			name:  "paths expand placeholders",
+			setup: func(t *testing.T) { t.Setenv("MCP_TEST_CA", certs.ca) },
+			body:  validConfig + "  tls:\n    ca: ${MCP_TEST_CA}\n",
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.tlsConfig.RootCAs == nil {
+					t.Error("RootCAs not set from an expanded path")
+				}
+			},
+		},
+		{
+			name:    "unset placeholder in a path is named",
+			body:    validConfig + "  tls:\n    ca: ${" + unsetVar + "}\n",
+			wantErr: []string{unsetVar},
+		},
+		{
+			name:    "missing CA file names the key",
+			body:    validConfig + "  tls:\n    ca: /nonexistent/ca.pem\n",
+			wantErr: []string{"database.tls.ca", "/nonexistent/ca.pem"},
+		},
+		{
+			name:    "CA file without certificates",
+			body:    validConfig + "  tls:\n    ca: " + certs.notPEM + "\n",
+			wantErr: []string{"database.tls.ca", "no certificates"},
+		},
+		{
+			name:    "cert without key",
+			body:    validConfig + "  tls:\n    cert: " + certs.cert + "\n",
+			wantErr: []string{"database.tls.cert", "database.tls.key"},
+		},
+		{
+			name:    "key without cert",
+			body:    validConfig + "  tls:\n    key: " + certs.key + "\n",
+			wantErr: []string{"database.tls.cert", "database.tls.key"},
+		},
+		{
+			name:    "bad key pair names both keys",
+			body:    validConfig + "  tls:\n    cert: " + certs.cert + "\n    key: " + certs.notPEM + "\n",
+			wantErr: []string{"database.tls.cert", "database.tls.key"},
+		},
+		{
+			name:    "skip_verify with a CA is a contradiction",
+			body:    validConfig + "  tls:\n    insecure_skip_verify: true\n    ca: " + certs.ca + "\n",
+			wantErr: []string{"insecure_skip_verify", "database.tls.ca"},
+		},
+		{
+			name:    "skip_verify with a server_name is a contradiction",
+			body:    validConfig + "  tls:\n    insecure_skip_verify: true\n    server_name: db\n",
+			wantErr: []string{"insecure_skip_verify", "database.tls.server_name"},
+		},
+		{
+			// The pair check runs before any file is read, so a bad path
+			// doesn't hide the shape error.
+			name:    "disabled section skips file checks",
+			body:    validConfig + "  tls:\n    enabled: false\n    ca: /nonexistent/ca.pem\n",
+			wantErr: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportHTTP)
+			if len(tt.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("LoadConfig succeeded, want error (tls=%+v)", cfg.tlsConfig)
+				}
+				for _, want := range tt.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if tt.check == nil {
+				if cfg.tlsConfig != nil || cfg.tlsOn() {
+					t.Fatalf("want plaintext, got tls config %+v", cfg.tlsConfig)
+				}
+				return
+			}
+			if cfg.tlsConfig == nil || !cfg.tlsOn() {
+				t.Fatal("want a tls config, got nil")
+			}
+			tt.check(t, cfg)
+		})
 	}
 }

@@ -46,6 +46,12 @@ A few things to get right:
   `/healthz` and `/readyz`, and they say up or down and nothing else; the
   readiness one caches its database ping for five seconds so an anonymous
   caller can't turn it into load.
+- **The hop to the database is plaintext unless `database.tls` says
+  otherwise.** That is the right default for the shape above, where the
+  database is on the same host or private network. When it isn't — a managed
+  database, or a `--stdio` server on a laptop reaching one elsewhere — turn
+  `database.tls` on; it verifies the certificate by default and warns at
+  startup if you opt out of that (README, Encrypting the database hop).
 - **Use a strong, unique bearer token,** and rotate it if it leaks. It's the
   only thing between a caller and the data. There is one token per deployment
   today, shared by everyone who connects, so the query log records what ran but

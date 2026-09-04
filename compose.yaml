@@ -9,9 +9,17 @@
 # If 3306 is already taken on your machine, set MYSQL_DEV_PORT. To test against
 # a different engine, set MYSQL_DEV_IMAGE (e.g. mysql:8.4); the seed and the
 # tests accommodate both MySQL and MariaDB.
+#
+# The database offers TLS with the throwaway certificates in seed/tls (never
+# requires it, so plaintext tests keep working). Point the TLS integration
+# tests at the CA with MYSQL_TEST_TLS_CA=seed/tls/ca.pem.
 services:
   db:
     image: ${MYSQL_DEV_IMAGE:-mariadb:10.11}
+    command:
+      - --ssl-ca=/etc/mysql-mcp-tls/ca.pem
+      - --ssl-cert=/etc/mysql-mcp-tls/server-cert.pem
+      - --ssl-key=/etc/mysql-mcp-tls/server-key.pem
     ports:
       - "${MYSQL_DEV_PORT:-3306}:3306"
     environment:
@@ -25,6 +33,7 @@ services:
       # directory is empty. `z` relabels for SELinux hosts (rootless Podman on
       # Fedora); other hosts ignore it.
       - ./seed/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro,z
+      - ./seed/tls:/etc/mysql-mcp-tls:ro,z
     healthcheck:
       # Both images run the seed on a socket-only temporary server, so a TCP
       # ping only succeeds once the real server is up with the seed applied.

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +18,10 @@ import (
 )
 
 const dialTimeout = 5 * time.Second
+
+// erSecureTransportRequired is MySQL's refusal of a plaintext connection
+// under require_secure_transport=ON. go-mysql doesn't name it.
+const erSecureTransportRequired = 3159
 
 // maxSafeInteger is the largest integer a float64 represents exactly. The MCP
 // SDK round-trips structured output through a float64 (applySchema unmarshals
@@ -90,12 +96,26 @@ func (p *Pool) socketDeadlines(d time.Duration) client.Option {
 	}
 }
 
+// transport applies the deployment's TLS config, when there is one, to a
+// connection about to handshake. Every dial goes through it — the pool's and
+// the kill connection's alike — so a database that requires TLS can't leave
+// the pool working but the kill silently failing.
+func (p *Pool) transport() client.Option {
+	return func(c *client.Conn) error {
+		if p.cfg.tlsConfig != nil {
+			c.SetTLSConfig(p.cfg.tlsConfig)
+		}
+		return nil
+	}
+}
+
 func (p *Pool) dial(ctx context.Context) (*client.Conn, error) {
 	d := time.Duration(p.cfg.Limits.TimeoutSeconds)*time.Second + 10*time.Second
 	// ConnectWithTimeout ignores its timeout argument (go-mysql v1.16.0
 	// hardcodes 10s); the context form is the one that actually bounds a dial.
 	conn, err := client.ConnectWithContext(ctx, p.addr, p.cfg.Database.Username,
-		p.cfg.Database.Password, p.cfg.Database.DBName, dialTimeout, p.socketDeadlines(d))
+		p.cfg.Database.Password, p.cfg.Database.DBName, dialTimeout,
+		p.socketDeadlines(d), p.transport())
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +153,10 @@ func (p *Pool) setupSession(conn *client.Conn) error {
 }
 
 // describeConnectError says what a failed connection attempt actually was —
-// a login the server refused, a database that isn't there, or a host that
-// never answered — so the startup log doesn't call a bad password
-// "unreachable". The driver's own text follows verbatim.
+// a login the server refused, a database that isn't there, a certificate
+// that didn't check out, or a host that never answered — so the startup log
+// doesn't call a bad password "unreachable". Each TLS case names the config
+// key that fixes it. The driver's own text follows verbatim.
 func describeConnectError(err error) string {
 	var my *mysql.MyError
 	if errors.As(err, &my) {
@@ -144,8 +165,30 @@ func describeConnectError(err error) string {
 			return "database login refused: " + err.Error()
 		case mysql.ER_BAD_DB_ERROR:
 			return "database not found: " + err.Error()
+		case erSecureTransportRequired:
+			return "database requires TLS (set database.tls.enabled: true): " + err.Error()
 		}
 		return "database rejected the connection: " + err.Error()
+	}
+	var hostErr x509.HostnameError
+	var caErr x509.UnknownAuthorityError
+	var certErr x509.CertificateInvalidError
+	var recErr tls.RecordHeaderError
+	switch {
+	case errors.As(err, &hostErr):
+		return "database certificate is not for this host (set database.tls.server_name to a name it carries, " +
+			"or database.tls.insecure_skip_verify if it has none): " + err.Error()
+	case errors.As(err, &caErr):
+		return "database certificate is signed by a CA this server doesn't trust (point database.tls.ca at it): " + err.Error()
+	case errors.As(err, &certErr), errors.As(err, &recErr):
+		return "database certificate rejected: " + err.Error()
+	case strings.Contains(err.Error(), "does not support TLS"):
+		// go-mysql's own text when the handshake offers no CLIENT_SSL.
+		return "database does not offer TLS but database.tls is on: " + err.Error()
+	case strings.Contains(err.Error(), "tls:"):
+		// Handshake alerts (a server demanding a client certificate, a
+		// version mismatch) arrive as plain errors with this prefix.
+		return "database TLS handshake failed: " + err.Error()
 	}
 	return "database unreachable: " + err.Error()
 }
@@ -196,7 +239,8 @@ func (p *Pool) killQuery(connID uint32) {
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	killer, err := client.ConnectWithContext(ctx, p.addr, p.cfg.Database.Username,
-		p.cfg.Database.Password, "", dialTimeout, p.socketDeadlines(dialTimeout))
+		p.cfg.Database.Password, "", dialTimeout,
+		p.socketDeadlines(dialTimeout), p.transport())
 	if err != nil {
 		slog.Warn("kill_query", "conn_id", connID, "error", err.Error())
 		return

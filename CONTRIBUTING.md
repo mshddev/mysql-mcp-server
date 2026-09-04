@@ -43,12 +43,21 @@ If 3306 is already in use, pick another host port with `MYSQL_DEV_PORT=3307`
 Verify:
 
 ```bash
-MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
+MYSQL_TEST_ADDR=127.0.0.1:3306 MYSQL_TEST_TLS_CA=seed/tls/ca.pem go test ./...
 ```
 
 All tests should pass against the seeded `mcp_dev` database. Without
 `MYSQL_TEST_ADDR` the integration tests skip and only the unit tests run, so
 check with `go test -v . | grep SKIP` if you're unsure whether they ran.
+
+The compose database serves TLS with the certificates in `seed/tls` — a
+throwaway CA, a server certificate with SANs for `localhost`, the loopback
+addresses and `db`, and a client certificate for the seeded `mcp_x509` user.
+`MYSQL_TEST_TLS_CA` turns the TLS tests on; they skip without it, so a
+database you seeded yourself needs no certificates. The private keys are
+checked in on purpose (they guard a container of fake rows) and
+`seed/tls/gen.sh` regenerates the set; after running it, recreate the
+container so the server picks up the new files.
 
 The seed only runs when the data directory is empty. To start over — after
 a write test leaves something behind, or after editing the seed — recreate the
@@ -86,8 +95,9 @@ MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
 
 Override the credentials with `MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD` and
 `MYSQL_TEST_DATABASE` if yours differ from the seed (`MYSQL_TEST_WRITE_USER`
-and `MYSQL_TEST_WRITE_PASSWORD` for the `full_access` tests, which skip when
-that user is missing).
+and `MYSQL_TEST_WRITE_PASSWORD` for the `full_access` tests, and
+`MYSQL_TEST_X509_USER` / `MYSQL_TEST_X509_PASSWORD` for the mutual-TLS ones;
+both sets skip when their user is missing).
 
 ## Before You Open a PR
 
@@ -96,7 +106,7 @@ Format, vet, and test:
 ```bash
 gofmt -w .
 go vet ./...
-MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
+MYSQL_TEST_ADDR=127.0.0.1:3306 MYSQL_TEST_TLS_CA=seed/tls/ca.pem go test ./...
 ```
 
 Keep changes focused and match the surrounding style. Add tests for new

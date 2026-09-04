@@ -241,8 +241,9 @@ cp config.example.yaml config.yaml
 
 `config.yaml` is gitignored. `${VAR}` placeholders are pulled from the
 environment, so nothing sensitive lands in the file. They work in `listen`,
-`auth_token`, `host`, `username`, `password`, `dbname` and `logging.file`; an
-unset variable is a startup error naming it, never a silent empty string:
+`auth_token`, `host`, `username`, `password`, `dbname`, the `tls` paths and
+`logging.file`; an unset variable is a startup error naming it, never a silent
+empty string:
 
 ```yaml
 mode: read_only                # or full_access: writes allowed, grants are the fence
@@ -257,6 +258,8 @@ database:
   username: mcp_readonly
   password: ${MYSQL_PASSWORD}
   dbname: mcp_dev
+  # tls:                       # optional; see Encrypting the database hop
+  #   ca: /etc/mysql-mcp-server/db-ca.pem
 
 limits:
   timeout_seconds: 30
@@ -282,6 +285,12 @@ masking:                # optional; omit the section to run without masking
 | `database.host` / `port` | Where the database lives. |
 | `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
 | `database.dbname` | Default database (schema) to connect to. |
+| `database.tls` | Encrypt the connection to the database. Absent means plaintext. See [Encrypting the database hop](#encrypting-the-database-hop). |
+| `database.tls.enabled` | Kill-switch. Defaults to true when any other `tls` key is present. |
+| `database.tls.ca` | PEM file with the CA that signed the database's certificate. Omit to trust the system store, which covers public CAs. |
+| `database.tls.server_name` | Name to verify the certificate against when it isn't `database.host` — a certificate for `db.internal` reached over an IP, say. |
+| `database.tls.cert` / `key` | Client certificate and private key for mutual TLS, for a user granted with `REQUIRE X509`. Both or neither. |
+| `database.tls.insecure_skip_verify` | Encrypt without checking who answers. Warns at startup; excludes `ca` and `server_name`. |
 | `limits.timeout_seconds` | Per-query timeout before a server-side kill. |
 | `limits.max_response_bytes` | Result-size cap before truncation. |
 | `limits.max_connections` | Pool size, doubling as the concurrency ceiling. |
@@ -298,6 +307,75 @@ Masking strictness is not configurable — it follows `mode`. Under `read_only`
 every query is enforced. Under `full_access` reads the server can parse are
 still enforced, while writes, DDL, and unparseable statements fall back to
 wire-metadata masking; it warns at startup when it starts in that state.
+
+### Encrypting the database hop
+
+The server talks to MySQL in plaintext unless you say otherwise, and for the
+deployment this README describes — the server on the same host or private
+network as the database — that is the right default. Turn TLS on when the hop
+crosses a network you don't control: a managed database (RDS, Cloud SQL,
+PlanetScale), or a [`--stdio`](#stdio) server on a laptop reaching a database
+somewhere else.
+
+Two things to know before you do. **The database has to offer TLS.** The
+driver has no "try TLS, then plaintext" mode, so a database without it is a
+refused connection at startup, never a silent downgrade. MySQL 8 and MariaDB
+11.4 turn it on by themselves at first start; older MariaDB needs `ssl_cert`,
+`ssl_key` and `ssl_ca` set on the server. And **with TLS on, the certificate
+is verified** the way a
+browser verifies a website's, unless you explicitly opt out — which brings us
+to the three shapes this takes.
+
+**A managed database.** The provider publishes the CA that signed its
+certificates; download it to the server's host and point at it:
+
+```yaml
+database:
+  host: mydb.abc123.ap-southeast-1.rds.amazonaws.com
+  tls:
+    ca: /etc/mysql-mcp-server/rds-global-bundle.pem
+```
+
+Providers behind a public CA (PlanetScale, for one) need no `ca` at all:
+`tls: {enabled: true}` verifies against the system trust store. If you reach
+the database by an alias or an IP the certificate doesn't carry, add
+`server_name` with the name it does carry.
+
+**A self-hosted database with its own certificate.** Same as above, with the
+`ca.pem` that signed the server's certificate copied over. One catch: the
+certificate MySQL and MariaDB generate for themselves has no Subject
+Alternative Name, only a placeholder Common Name, and Go refuses to verify a
+certificate without a SAN no matter what `server_name` says. So for an
+auto-generated certificate the choice is to issue a real one — `seed/tls/gen.sh`
+shows the `openssl` incantation, SANs included — or to settle for encryption
+without identity:
+
+```yaml
+  tls:
+    insecure_skip_verify: true   # resists eavesdropping, not impersonation
+```
+
+The server warns at startup in that state, and the config refuses `ca` or
+`server_name` alongside it, since neither would be checked.
+
+**Mutual TLS.** When the database user is granted with `REQUIRE X509`, the
+server has to present a client certificate the database trusts. Add the pair,
+which the config expands `${VAR}` placeholders in like any other path:
+
+```yaml
+  tls:
+    ca: /etc/mysql-mcp-server/db-ca.pem
+    cert: /etc/mysql-mcp-server/client.pem
+    key: /etc/mysql-mcp-server/client-key.pem
+```
+
+That is rarely worth the certificate management unless your team already runs
+a private CA; the bearer token in front and a verified TLS hop behind cover
+the same ground for most deployments.
+
+The startup line reports `"tls":true` when the hop is encrypted, and
+`SHOW SESSION STATUS LIKE 'Ssl_cipher'` through the `query` tool shows the
+cipher from the database's side.
 
 `config.example.yaml` ships a starter `mask` list to trim, not a blank page —
 forgetting a column is the failure mode. A `masking` section that is enabled
@@ -343,6 +421,12 @@ What changes under stdio:
 - **Logs go to stderr**, because stdout is the wire. `logging.output: stdout`
   means stderr under `--stdio`, and `file` works as before.
 - **No health probes.** There is nothing listening.
+- **The database may be far away.** A laptop reaching a database on another
+  network is the one case where the hop from this server to the database
+  crosses something you don't control. Either an SSH tunnel
+  (`ssh -N -L 3307:127.0.0.1:3306 db-host`, then `host: 127.0.0.1` and
+  `port: 3307`) or `database.tls` — see
+  [Encrypting the database hop](#encrypting-the-database-hop).
 - **One session per process.** The server exits 0 when the client closes the
   pipe, and each client launch is a fresh process with its own pool.
 
@@ -617,6 +701,11 @@ config resolves and the database answers.
 | `database unreachable: dial tcp …: connect: connection refused` | Wrong host or port, or the database is down. |
 | `database login refused: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
 | `database login refused: … ERROR 1044 (42000): Access denied for user … to database …` | The user has no grant on `database.dbname` — misspelled, or the `GRANT` named a different schema. |
+| `database does not offer TLS but database.tls is on: …` | The database isn't serving TLS. MySQL 8 and MariaDB 11.4 do by default; older MariaDB needs `ssl_cert`, `ssl_key` and `ssl_ca` set server-side. Or drop the `tls` section if the hop is local. |
+| `database requires TLS (set database.tls.enabled: true): …` | The database has `require_secure_transport=ON` and refuses plaintext. Add a `tls` section. |
+| `database certificate is signed by a CA this server doesn't trust …` | `database.tls.ca` is missing or points at the wrong file. Use the CA that signed the database's certificate, not the certificate itself. |
+| `database certificate is not for this host …` | The certificate's names don't include `database.host`. Set `database.tls.server_name` to one they do include. If the error mentions the legacy Common Name, the certificate has no SAN at all — MySQL's auto-generated one, typically — and only `insecure_skip_verify` or a real certificate will do. |
+| `database login refused: … Access denied` with `tls` on and the user granted `REQUIRE SSL` or `REQUIRE X509` | The database enforces the requirement at login, and a missing client certificate looks exactly like a bad password. Check `SHOW CREATE USER` and add `cert` / `key` if it says `X509`. |
 | `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
 | `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
 | `405 Method Not Allowed` | You sent a `GET` to the MCP endpoint, or a `POST` to a health probe. MCP calls are `POST`; `/healthz` and `/readyz` are `GET`. |
@@ -638,9 +727,10 @@ config resolves and the database answers.
 ## Local Development
 
 Start a throwaway database — a couple of tables, fake rows, a `SELECT`-only
-user (`mcp_readonly`), and a full-access user (`mcp_write`) for exercising
-`full_access` mode. `compose.yaml` runs MariaDB in a container with
-`seed/seed.sql` applied:
+user (`mcp_readonly`), a full-access user (`mcp_write`) for exercising
+`full_access` mode, and a `REQUIRE X509` user (`mcp_x509`) for mutual TLS.
+`compose.yaml` runs MariaDB in a container with `seed/seed.sql` applied and
+TLS offered with the throwaway certificates in `seed/tls`:
 
 ```bash
 docker compose up -d --wait      # or: podman compose up -d --wait
@@ -671,7 +761,8 @@ The unit tests always run. The integration tests are skipped unless
 MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...
 ```
 
-Override the credentials with `MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD` and
+The TLS tests also need `MYSQL_TEST_TLS_CA=seed/tls/ca.pem` and skip without
+it. Override the credentials with `MYSQL_TEST_USER`, `MYSQL_TEST_PASSWORD` and
 `MYSQL_TEST_DATABASE` if yours differ from the seed. CONTRIBUTING.md covers
 re-seeding, changing the port, and running against MySQL instead of MariaDB.
 
