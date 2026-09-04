@@ -77,6 +77,17 @@ logging:
 # rules don't name, and writes, DDL, and statements the parser can't read run
 # with wire-metadata masking only (reads it can parse stay strictly checked).
 # The server logs a warning at startup whenever it runs in that combination.
+#
+# "values" adds a second layer that works by shape instead of by name: every
+# text cell the column rules left alone is scanned, and a span that looks like
+# an email address (email) or an Indonesian mobile number (phone_id: 08…, 62…,
+# +62…) comes back as "<masked>" with the rest of the cell intact. It catches
+# personal data in columns no rule can name — free text, JSON blobs, a view's
+# renamed column, a table copied under full_access — and only ever masks more.
+# It is best-effort: a name or an address has no shape, so keep the column
+# rules as the primary mechanism. "except" shields a column from both layers,
+# which is also the fix when a business value (an invoice number) looks like a
+# phone. Omit "values" to run without it.
 masking:
   enabled: true
   mask:
@@ -98,3 +109,4 @@ masking:
     - "*_token"
     - "*account_number*"
   except: []
+  values: [email, phone_id]

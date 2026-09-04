@@ -121,6 +121,10 @@ func main() {
 			" To verify masking the server reads the query, and refuses ones it can't " +
 			"check: a SELECT * inside a sub-query, join, or union is refused (list the columns " +
 			"instead), and computed columns built from PII are masked."
+		if cfg.masker.scansValues() {
+			description += " Text that looks like personal data (an email address, a phone number) is also" +
+				" masked wherever it appears inside a value (listed per result in masked_values)."
+		}
 		if cfg.fullAccess() {
 			description += " Write statements are not masking-checked."
 		}
@@ -160,7 +164,8 @@ func main() {
 	)
 
 	logger.Info("startup", "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil, "version", version)
+		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
+		"masking_values", cfg.masker.scansValues(), "version", version)
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),

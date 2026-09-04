@@ -65,6 +65,23 @@ func TestNewMasker(t *testing.T) {
 			mc:      &MaskingConfig{Mask: []string{".phone"}},
 			wantErr: "empty table part",
 		},
+		{
+			// Shape detectors alone are a valid policy: they still turn on
+			// the strict planner, they just have no column rules to apply.
+			name:    "values without mask rules are active",
+			mc:      &MaskingConfig{Values: []string{"email"}},
+			wantNil: false,
+		},
+		{
+			name:    "unknown detector",
+			mc:      &MaskingConfig{Mask: []string{"phone"}, Values: []string{"ssn"}},
+			wantErr: "masking.values entry \"ssn\"",
+		},
+		{
+			name:    "disabled still validates detectors",
+			mc:      &MaskingConfig{Enabled: new(false), Values: []string{"ssn"}},
+			wantErr: "masking.values",
+		},
 	}
 
 	for _, tt := range tests {

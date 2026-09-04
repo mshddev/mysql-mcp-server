@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -35,8 +36,12 @@ type QueryResult struct {
 	// MaskedColumns names the result columns whose values the PII policy
 	// replaced, so a caller can tell "<masked>" apart from real data.
 	MaskedColumns []string `json:"masked_columns,omitempty"`
-	Truncated     bool     `json:"truncated"`
-	Note          string   `json:"note,omitempty"`
+	// MaskedValues maps a result column to the value detectors (email,
+	// phone_id) that masked a span inside at least one of its cells. Distinct
+	// from MaskedColumns: those cells are otherwise real data.
+	MaskedValues map[string][]string `json:"masked_values,omitempty"`
+	Truncated    bool                `json:"truncated"`
+	Note         string              `json:"note,omitempty"`
 	// AffectedRows and LastInsertID report the outcome of a statement that
 	// returned no resultset (INSERT/UPDATE/DELETE/DDL under full_access).
 	// AffectedRows is present even at 0 — "matched nothing" is real
@@ -239,7 +244,8 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	res := &QueryResult{Columns: []string{}, Rows: []map[string]any{}}
 	bytesSoFar := 0
 	var fields []*mysql.Field
-	var masked []bool
+	var masked, exempt []bool
+	hits := valueHits{}
 	var streamResult mysql.Result
 
 	err = conn.ExecuteSelectStreaming(sql, &streamResult,
@@ -253,7 +259,22 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 					// exists is not PII, the value is.
 					v, size = maskedValue, len(maskedValue)+2
 				} else {
-					v, size = fieldValueToJSON(&row[i], fieldAt(fields, i))
+					f := fieldAt(fields, i)
+					v, size = fieldValueToJSON(&row[i], f)
+					// Second layer: a cell the column rules passed is checked
+					// by shape. Only text cells qualify — binary payloads are
+					// already a placeholder, and INT/FLOAT can't hold an email
+					// or a leading-zero phone number. (DECIMAL is a string cell
+					// and is scanned; the phone shape doesn't match a decimal.)
+					if p.masker.scansValues() && row[i].Type == mysql.FieldValueTypeString &&
+						!isBinaryField(f) && !(i < len(exempt) && exempt[i]) {
+						if s, ok := v.(string); ok {
+							if out, fired := p.masker.scanValue(s); fired != nil {
+								v, size = out, len(out)+2
+								hits.add(i, fired)
+							}
+						}
+					}
 				}
 				key := labelAt(res.Columns, i)
 				vals[key] = v
@@ -269,14 +290,17 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 			fields = result.Fields
 			res.Columns = columnLabels(fields)
 			masked = make([]bool, len(fields))
+			exempt = make([]bool, len(fields))
 			for i, f := range fields {
 				var mk bool
 				if plan != nil && !plan.useWire {
 					// Traced decision by position; a length mismatch (the parse
 					// and the resultset disagreeing) fails closed.
 					mk = i >= len(plan.mask) || plan.mask[i]
+					exempt[i] = i < len(plan.exempt) && plan.exempt[i]
 				} else {
 					mk = p.masker.Masked(f.OrgTable, f.OrgName)
+					exempt[i] = p.masker.Excepted(f.OrgTable, f.OrgName)
 				}
 				if mk {
 					masked[i] = true
@@ -320,15 +344,41 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	}
 	// Composed here, at the single success exit, so the truncation note above
 	// cannot overwrite it.
+	res.MaskedValues = hits.report(res.Columns)
+	var notes []string
 	if len(res.MaskedColumns) > 0 {
-		note := fmt.Sprintf("values in %s are %q by server PII policy",
-			strings.Join(res.MaskedColumns, ", "), maskedValue)
-		if res.Note != "" {
-			note += "; " + res.Note
-		}
-		res.Note = note
+		notes = append(notes, fmt.Sprintf("values in %s are %q by server PII policy",
+			strings.Join(res.MaskedColumns, ", "), maskedValue))
 	}
+	if len(res.MaskedValues) > 0 {
+		notes = append(notes, valueMaskNote(res.MaskedValues))
+	}
+	if res.Note != "" {
+		notes = append(notes, res.Note)
+	}
+	res.Note = strings.Join(notes, "; ")
 	return res, nil
+}
+
+// valueMaskNote words the masked_values map for the note, in a stable order
+// so identical results read identically.
+func valueMaskNote(mv map[string][]string) string {
+	cols := make([]string, 0, len(mv))
+	kinds := map[string]bool{}
+	for col, names := range mv {
+		cols = append(cols, col)
+		for _, n := range names {
+			kinds[n] = true
+		}
+	}
+	sort.Strings(cols)
+	kindList := make([]string, 0, len(kinds))
+	for k := range kinds {
+		kindList = append(kindList, k)
+	}
+	sort.Strings(kindList)
+	return fmt.Sprintf("text matching %s patterns is %q inside %s by server PII policy",
+		strings.Join(kindList, ", "), maskedValue, strings.Join(cols, ", "))
 }
 
 func fieldAt(fields []*mysql.Field, i int) *mysql.Field {

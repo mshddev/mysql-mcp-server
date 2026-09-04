@@ -294,6 +294,16 @@ func TestLoadConfigMasking(t *testing.T) {
 			body:    validConfig + "masking:\n  enabled: false\n  mask: [\"[bad\"]\n",
 			wantErr: "masking.mask",
 		},
+		{
+			name:       "values alone are active",
+			body:       validConfig + "masking:\n  values: [email, phone_id]\n",
+			wantMasker: true,
+		},
+		{
+			name:    "unknown detector is an error",
+			body:    validConfig + "masking:\n  mask: [phone]\n  values: [credit_card]\n",
+			wantErr: "masking.values",
+		},
 	}
 
 	for _, tt := range tests {

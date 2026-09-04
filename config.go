@@ -63,6 +63,9 @@ type MaskingConfig struct {
 	Enabled *bool    `yaml:"enabled"`
 	Mask    []string `yaml:"mask"`
 	Except  []string `yaml:"except"`
+	// Values names the shape detectors (email, phone_id) that scan string
+	// cells the column rules left alone. Omitted means no value scanning.
+	Values []string `yaml:"values"`
 }
 
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the

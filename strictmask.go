@@ -24,6 +24,11 @@ import (
 type queryPlan struct {
 	useWire bool
 	mask    []bool
+	// exempt[i] says result column i is a plain reference to a column that
+	// masking.except carves out, so the value detectors skip it too. Only a
+	// plain reference qualifies: an expression over excepted columns has no
+	// single origin to vouch for and stays scanned.
+	exempt []bool
 }
 
 // maxTraceDepth bounds recursion into nested sub-queries so a pathologically
@@ -205,13 +210,15 @@ func (tr *tracer) plan(rsn ast.ResultSetNode) (*queryPlan, error) {
 		return nil, refusef("%s", tr.refuse)
 	}
 	mask := make([]bool, len(frs))
+	exempt := make([]bool, len(frs))
 	for i, fr := range frs {
 		if fr.wildcard {
 			return nil, refusef("a SELECT * inside a sub-query, join, or union can't be verified — list the columns explicitly")
 		}
 		mask[i] = tr.personal(fr.origin)
+		exempt[i] = fr.origin.kind == originColumn && tr.m.Excepted([]byte(fr.origin.table), []byte(fr.origin.column))
 	}
-	return &queryPlan{mask: mask}, nil
+	return &queryPlan{mask: mask, exempt: exempt}, nil
 }
 
 func (tr *tracer) personal(o colOrigin) bool {

@@ -125,21 +125,33 @@ curl gets rows back, an MCP client will too — wire one up under
   plain `COUNT` is a number and passes). A query it can't verify — a `SELECT *`
   inside a sub-query/join/union, or syntax it can't parse — is **refused** with
   a message telling the agent to simplify it.
+  - **`masking.values`** adds a second layer that works by shape instead of by
+    name: every text cell the column rules left alone is scanned for an email
+    address or an Indonesian phone number, and the matching span comes back as
+    `"<masked>"` while the rest of the cell stays readable. It catches personal
+    data in places no column rule can name — free text, JSON blobs, a view's
+    renamed column, a table copied under `full_access` — and it only ever masks
+    more, never less. It is best-effort by nature: a name, an address, or a date
+    has no shape, so the column rules stay the primary mechanism, and an
+    `except` rule shields a plain column from both layers.
   - Still not a wall against a determined caller. Known gaps, documented by
     design (for those, use database-level controls — e.g. a user restricted to
     redacted views):
     - **views** — the server does not read view definitions, so a personal column
       exposed through a view is only masked if you add the view's column to the
-      rules (e.g. `contact`);
+      rules (e.g. `contact`) — or if `masking.values` recognises its shape;
     - values can still be **inferred** without ever appearing in the output —
       through a `WHERE` condition (`WHERE phone LIKE '0812%'`), or a window
       function's `PARTITION BY` / `ORDER BY` over a personal column (which reveals
       ordering or uniqueness, not the value) — neither of which masking inspects;
+      and with `masking.values`, a cell that is masked only where a match sits
+      reveals which rows held one;
     - **stored functions** that return personal data from inside their body;
     - **MariaDB-only syntax** the (MySQL-dialect) parser can't read is refused
       rather than run;
     - under **`full_access`**, masking degrades further — a write can copy
-      personal data into tables the rules don't name, and writes, DDL, and
+      personal data into tables the rules don't name (only `masking.values` can
+      still catch it there, and only by shape), and writes, DDL, and
       unparseable statements run with wire-metadata masking only. This follows
       from the mode, so there is nothing to switch on; the server logs a
       warning at startup whenever masking runs alongside write access;
@@ -256,6 +268,7 @@ masking:                # optional; omit the section to run without masking
   enabled: true
   mask: [phone, "*_phone", email, name, address]
   except: ["room_types.display_name"]
+  values: [email, phone_id]   # optional second layer: mask by shape, not name
 ```
 
 | Key | Meaning |
@@ -275,7 +288,8 @@ masking:                # optional; omit the section to run without masking
 | `logging.rotation` | For file output: `max_size_mb` (rotate at this size, default 100), `max_backups` / `max_age_days` (0 = keep everything, the default), `compress`. |
 | `masking.enabled` | Kill-switch. Defaults to true when rules are present. |
 | `masking.mask` | Case-insensitive globs of column names to mask — bare (`phone`) matches every table, qualified (`users.address`) just one. |
-| `masking.except` | Carve-outs for false positives; beats `mask`. |
+| `masking.except` | Carve-outs for false positives; beats `mask` and shields the column from `values` too. |
+| `masking.values` | Shape detectors to run over text cells the column rules left alone: `email`, `phone_id` (Indonesian mobile numbers). Omit for none. |
 
 Masking strictness is not configurable — it follows `mode`. Under `read_only`
 every query is enforced. Under `full_access` reads the server can parse are
@@ -284,8 +298,8 @@ wire-metadata masking; it warns at startup when it starts in that state.
 
 `config.example.yaml` ships a starter `mask` list to trim, not a blank page —
 forgetting a column is the failure mode. A `masking` section that is enabled
-but has no `mask` rules refuses to start; opt out explicitly with
-`enabled: false` or by omitting the section.
+but has neither `mask` rules nor `values` refuses to start; opt out explicitly
+with `enabled: false` or by omitting the section.
 
 Startup fails fast if the database is unreachable or a referenced env var is
 unset.
@@ -517,6 +531,10 @@ A few rules worth knowing:
 - Columns caught by the server's PII policy come back as `"<masked>"` (their
   `NULL`s stay `null`); the response names them in `masked_columns` and the
   `note` says why, so the agent won't mistake the placeholder for data.
+- With `masking.values` on, text inside an otherwise real cell that looks like
+  an email address or a phone number becomes `"<masked>"` in place;
+  `masked_values` maps each affected column to the detectors that fired, and
+  the `note` says so.
 - `DECIMAL` stays a string to keep precision, and so do integers past ±2^53
   (`BIGINT` IDs) — the MCP SDK round-trips numbers through a float64, which would
   otherwise corrupt them.
@@ -550,7 +568,8 @@ config resolves and the database answers.
 | `PII masking refused this query: a SELECT * inside a sub-query, join, or union can't be verified` | Masking can't trace `*` back to real columns. List them explicitly. |
 | `PII masking refused this query: could not parse it to verify masking` | The MySQL-dialect parser couldn't read the statement, usually MariaDB-only syntax. Rewrite it, or run that deployment without masking. |
 | A column comes back `"<masked>"` and shouldn't | A rule matched its name. Put the qualified column in `masking.except` — it beats `mask`. |
-| A column you wanted masked comes back in the clear | Nothing matched it. Rules match a column's *real* name, so a view that renames one needs the view's own column added. See the views gap in [Safety Model](#safety-model). |
+| A column you wanted masked comes back in the clear | Nothing matched it. Rules match a column's *real* name, so a view that renames one needs the view's own column added — or, for emails and phone numbers, `masking.values`. See the views gap in [Safety Model](#safety-model). |
+| Part of a value comes back `"<masked>"` inside otherwise real text | A `masking.values` detector matched its shape — an invoice number that looks like a phone, say. Put the qualified column in `masking.except`, which shields it from both layers, or drop that detector. |
 | `truncated at ~N bytes — narrow the query (add WHERE or LIMIT)` | The response cap. Narrow the query, or raise `limits.max_response_bytes`. |
 | Every query dies at the same duration | `limits.timeout_seconds`. The kill runs server-side, so the database stops working on it too. |
 | Writes still fail under `full_access` | Grants are the only fence there. Check `SHOW GRANTS`, and confirm the startup line says `"mode":"full_access"`. |

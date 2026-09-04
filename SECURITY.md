@@ -30,9 +30,10 @@ A few things to get right:
   environments (staging) whose data you can restore, with a user scoped to
   exactly that schema, and never for production. If you run PII masking there,
   know its ceiling: it keeps personal data out of an agent's context by
-  accident, but a caller with write access can copy data past the rules. The
-  server warns about that at startup rather than blocking it, so read your
-  logs on the first boot of a full_access deployment.
+  accident, but a caller with write access can copy data past the rules — only
+  `masking.values` still sees such a copy, and only for values with a
+  recognisable shape. The server warns about that at startup rather than
+  blocking it, so read your logs on the first boot of a full_access deployment.
   (Masking is best-effort everywhere, in truth: even read-only, values can be
   probed through `WHERE` conditions. Sanitize the data itself when you need a
   guarantee.)

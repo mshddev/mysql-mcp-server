@@ -24,6 +24,9 @@ type maskRule struct {
 type Masker struct {
 	mask   []maskRule
 	except []maskRule
+	// values are the shape detectors from masking.values (valuemask.go); they
+	// run over string cells the column rules left alone. Empty means off.
+	values []valueDetector
 	// bestEffort (full_access mode only) lets statements planQuery can't
 	// verify — writes, DDL, anything unparseable — run with wire-tag masking
 	// instead of being refused. Reads it can parse stay strictly checked.
@@ -45,15 +48,19 @@ func NewMasker(mc *MaskingConfig) (*Masker, error) {
 	if err != nil {
 		return nil, err
 	}
+	values, err := parseDetectors(mc.Values)
+	if err != nil {
+		return nil, err
+	}
 	// An omitted enabled flag means true: whoever wrote rules wants them
 	// active, and defaulting the other way would disable masking silently.
 	if mc.Enabled != nil && !*mc.Enabled {
 		return nil, nil
 	}
-	if len(mask) == 0 {
-		return nil, fmt.Errorf("masking is enabled but masking.mask has no rules; set masking.enabled: false to opt out")
+	if len(mask) == 0 && len(values) == 0 {
+		return nil, fmt.Errorf("masking is enabled but has no rules (masking.mask and masking.values are both empty); set masking.enabled: false to opt out")
 	}
-	return &Masker{mask: mask, except: except}, nil
+	return &Masker{mask: mask, except: except, values: values}, nil
 }
 
 func parseRules(list string, entries []string) ([]maskRule, error) {
@@ -102,6 +109,16 @@ func (m *Masker) Masked(orgTable, orgName []byte) bool {
 	table := strings.ToLower(string(orgTable))
 	column := strings.ToLower(string(orgName))
 	return !matchAny(m.except, table, column) && matchAny(m.mask, table, column)
+}
+
+// Excepted reports whether a column is carved out by masking.except, given
+// its wire-protocol origin. An excepted column is trusted outright: neither
+// the column rules nor the value detectors touch it.
+func (m *Masker) Excepted(orgTable, orgName []byte) bool {
+	if m == nil || len(orgName) == 0 {
+		return false
+	}
+	return matchAny(m.except, strings.ToLower(string(orgTable)), strings.ToLower(string(orgName)))
 }
 
 func matchAny(rules []maskRule, table, column string) bool {

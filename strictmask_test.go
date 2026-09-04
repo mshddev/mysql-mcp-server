@@ -140,3 +140,37 @@ func checkPlan(t *testing.T, sql string, plan *queryPlan, err error, wantErr str
 		t.Errorf("mask = %v, want %v", plan.mask, wantMask)
 	}
 }
+
+// masking.except shields a plain column reference from the value detectors
+// too; anything computed keeps being scanned because it has no single origin
+// to vouch for.
+func TestPlanQueryExempt(t *testing.T) {
+	m := maskerForTest(t, []string{"*_email"}, []string{"merchants.support_email"})
+
+	tests := []struct {
+		name       string
+		sql        string
+		wantExempt []bool
+	}{
+		{name: "plain excepted column through a derived table", sql: "SELECT e FROM (SELECT support_email AS e FROM merchants) t", wantExempt: []bool{true}},
+		{name: "excepted column via cte", sql: "WITH c AS (SELECT support_email FROM merchants) SELECT support_email FROM c", wantExempt: []bool{true}},
+		{name: "expression over an excepted column is not exempt", sql: "SELECT CONCAT(support_email, '') AS e FROM merchants", wantExempt: []bool{false}},
+		{name: "same name in another table is not exempt", sql: "SELECT e FROM (SELECT support_email AS e FROM users) t", wantExempt: []bool{false}},
+		{name: "mixed", sql: "SELECT id, e FROM (SELECT id, support_email AS e FROM merchants) t", wantExempt: []bool{false, true}},
+		{name: "union of excepted columns is not exempt", sql: "SELECT support_email FROM merchants UNION ALL SELECT support_email FROM merchants", wantExempt: []bool{false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := m.planQuery(tt.sql)
+			if err != nil {
+				t.Fatalf("planQuery(%q): %v", tt.sql, err)
+			}
+			if plan.useWire {
+				t.Fatalf("planQuery(%q) took the wire path, want a trace", tt.sql)
+			}
+			if !slices.Equal(plan.exempt, tt.wantExempt) {
+				t.Errorf("exempt = %v, want %v", plan.exempt, tt.wantExempt)
+			}
+		})
+	}
+}
