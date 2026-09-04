@@ -34,7 +34,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	cfg, err := LoadConfig(writeConfig(t, validConfig))
+	cfg, err := LoadConfig(writeConfig(t, validConfig), transportHTTP)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -122,7 +122,7 @@ logging:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportHTTP)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
@@ -156,7 +156,7 @@ limits:
   timeout_seconds: 5
   max_response_bytes: 1024
   max_connections: 2
-`))
+`), transportHTTP)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -196,7 +196,7 @@ database:
   username: mcp_readonly
   password: ${MCP_TEST_DB_PASSWORD}
   dbname: mcp_dev
-`))
+`), transportHTTP)
 			if err != nil {
 				t.Fatalf("LoadConfig: %v", err)
 			}
@@ -228,7 +228,7 @@ database:
 logging:
   output: file
   file: ${MCP_TEST_LOG_DIR}/server.log
-`))
+`), transportHTTP)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestLoadConfigMasking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportHTTP)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
@@ -370,7 +370,7 @@ func TestLoadConfigMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportHTTP)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("LoadConfig succeeded, want an error mentioning %q", tt.wantErr)
@@ -532,7 +532,7 @@ database:
 			if tt.setup != nil {
 				tt.setup(t)
 			}
-			cfg, err := LoadConfig(writeConfig(t, tt.body))
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportHTTP)
 			if err == nil {
 				t.Fatalf("LoadConfig succeeded, want error (got %+v)", cfg)
 			}
@@ -552,7 +552,7 @@ database:
 }
 
 func TestLoadConfigUnreadableFile(t *testing.T) {
-	_, err := LoadConfig(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	_, err := LoadConfig(filepath.Join(t.TempDir(), "does-not-exist.yaml"), transportHTTP)
 	if err == nil {
 		t.Fatal("LoadConfig succeeded on a missing file, want error")
 	}
@@ -566,5 +566,87 @@ func TestUnsetVarIsUnset(t *testing.T) {
 		if v, ok := os.LookupEnv(name); ok {
 			t.Fatalf("%s is set to %q in the environment; the missing-variable tests need it unset", name, v)
 		}
+	}
+}
+
+// Under stdio the client that launched the process is the only caller, so
+// there is no token to check and the server section is not even read: a
+// file written for the HTTP deployment, placeholder token and all, must load
+// without that variable in the environment.
+func TestLoadConfigStdio(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "no server section",
+			body: `
+database:
+  host: 127.0.0.1
+  username: mcp_readonly
+  password: devpassword
+  dbname: mcp_dev
+`,
+		},
+		{
+			name: "unset token placeholder is left alone",
+			body: `
+server:
+  listen: ${` + unsetVar + `}
+  auth_token: ${` + unsetVar + `}
+database:
+  host: 127.0.0.1
+  username: mcp_readonly
+  password: devpassword
+  dbname: mcp_dev
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadConfig(writeConfig(t, tt.body), transportStdio)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if !cfg.stdio() {
+				t.Error("stdio() = false, want true")
+			}
+			if cfg.console() != os.Stderr {
+				t.Error("console() is not stderr; a log line on stdout would corrupt the MCP stream")
+			}
+		})
+	}
+
+	// The database section is still validated: stdio changes who may call,
+	// not what the server needs to answer.
+	_, err := LoadConfig(writeConfig(t, `
+database:
+  host: 127.0.0.1
+  username: mcp_readonly
+  password: ${`+unsetVar+`}
+  dbname: mcp_dev
+`), transportStdio)
+	if err == nil || !strings.Contains(err.Error(), unsetVar) {
+		t.Errorf("unset database placeholder under stdio: err = %v, want it to name %s", err, unsetVar)
+	}
+}
+
+func TestLoadConfigHTTPConsole(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t, validConfig), transportHTTP)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.stdio() {
+		t.Error("stdio() = true under the HTTP transport")
+	}
+	if cfg.console() != os.Stdout {
+		t.Error("console() is not stdout under the HTTP transport")
+	}
+}
+
+func TestLoadConfigUnknownTransport(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, validConfig), "websocket")
+	if err == nil || !strings.Contains(err.Error(), "transport") {
+		t.Errorf("err = %v, want it to mention transport", err)
 	}
 }

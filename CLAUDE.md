@@ -1,6 +1,6 @@
 # About This Project
 MCP server for MySQL/MariaDB: runs raw SQL against MySQL/MariaDB then give the results back in json format.
-Remote-first: one instance runs near the database over streamable HTTP with a bearer token, and a team's agents connect to its URL. There is no stdio transport, and the docs should never imply one.
+Remote-first: one instance runs near the database over streamable HTTP with a bearer token, and a team's agents connect to its URL. `--stdio` is the secondary, single-user path (the client launches the binary; no token; logs on stderr), and the docs should present it as that, never as the main deployment.
 
 # Commands
 
@@ -13,6 +13,7 @@ MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...   # also run integration tests
 docker compose up -d --wait                    # seeded dev DB in a container (podman compose works too)
 mysql -h 127.0.0.1 -u root < seed/seed.sql     # or seed a local MySQL/MariaDB yourself
 MYSQL_MCP_AUTH_TOKEN=... MYSQL_PASSWORD=... ./mysql-mcp-server --config ./config.yaml
+MYSQL_PASSWORD=... ./mysql-mcp-server --stdio --config ./config.yaml   # single-user, client launches it
 ```
 
 Integration tests need a database seeded with `seed/seed.sql`; connection

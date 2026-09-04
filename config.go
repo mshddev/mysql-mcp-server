@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -14,6 +15,14 @@ import (
 const (
 	modeReadOnly   = "read_only"
 	modeFullAccess = "full_access"
+)
+
+// The two transports. HTTP is the deployment the project is built around;
+// stdio is the single-user path where an MCP client launches the binary as a
+// subprocess and speaks JSON-RPC over its pipes.
+const (
+	transportHTTP  = "http"
+	transportStdio = "stdio"
 )
 
 type Config struct {
@@ -51,6 +60,10 @@ type Config struct {
 	// Masking is opt-in per deployment: an absent section means off.
 	Masking *MaskingConfig `yaml:"masking"`
 
+	// transport is chosen on the command line, not in the file: the client
+	// launching a stdio server decides that, and one config can then serve
+	// both. Under stdio the Server section is unused and left unexpanded.
+	transport string
 	// masker is derived from Masking at load time; nil when masking is off.
 	masker *Masker
 	// logLevel is derived from Logging.Level at load time.
@@ -71,13 +84,22 @@ type MaskingConfig struct {
 // LoadConfig reads the YAML file, then expands ${VAR} placeholders from the
 // environment. Expansion happens after parsing so secret values containing
 // YAML-significant characters (#, :, quotes) can't corrupt the document.
-func LoadConfig(path string) (*Config, error) {
+// transport is transportHTTP or transportStdio; under stdio the server
+// section is skipped entirely, placeholders included, so a file written for
+// the HTTP deployment loads without its token variable set.
+func LoadConfig(path, transport string) (*Config, error) {
+	switch transport {
+	case transportHTTP, transportStdio:
+	default:
+		return nil, fmt.Errorf("transport must be %q or %q, got %q", transportHTTP, transportStdio, transport)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
 	cfg := &Config{}
+	cfg.transport = transport
 	cfg.Mode = modeReadOnly
 	cfg.Server.Listen = "127.0.0.1:3000"
 	cfg.Database.Port = 3306
@@ -93,12 +115,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var missing []string
-	for _, f := range []*string{
-		&cfg.Server.Listen, &cfg.Server.AuthToken,
+	expand := []*string{
 		&cfg.Database.Host, &cfg.Database.Username,
 		&cfg.Database.Password, &cfg.Database.DBName,
 		&cfg.Logging.File,
-	} {
+	}
+	if !cfg.stdio() {
+		expand = append(expand, &cfg.Server.Listen, &cfg.Server.AuthToken)
+	}
+	for _, f := range expand {
 		*f = os.Expand(*f, func(key string) string {
 			val, ok := os.LookupEnv(key)
 			if !ok {
@@ -116,7 +141,7 @@ func LoadConfig(path string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("mode must be %q or %q, got %q", modeReadOnly, modeFullAccess, cfg.Mode)
 	}
-	if cfg.Server.AuthToken == "" {
+	if !cfg.stdio() && cfg.Server.AuthToken == "" {
 		return nil, fmt.Errorf("server.auth_token must not be empty")
 	}
 	if cfg.Database.Host == "" || cfg.Database.Username == "" || cfg.Database.DBName == "" {
@@ -157,3 +182,16 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func (c *Config) fullAccess() bool { return c.Mode == modeFullAccess }
+
+func (c *Config) stdio() bool { return c.transport == transportStdio }
+
+// console is where output meant for a terminal or a log collector goes:
+// stdout normally, stderr under stdio, where stdout is the wire the MCP
+// client reads and a single log line on it would corrupt the JSON-RPC
+// stream.
+func (c *Config) console() io.Writer {
+	if c.stdio() {
+		return os.Stderr
+	}
+	return os.Stdout
+}

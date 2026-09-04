@@ -15,6 +15,9 @@
 #               For disposable environments (staging) with a scoped user.
 mode: read_only
 
+# The whole server section is ignored under --stdio (the client that launched
+# the process is the only caller), placeholders included, so this file loads
+# there without MYSQL_MCP_AUTH_TOKEN set.
 server:
   # Loopback on purpose: a TLS-terminating reverse proxy on the same host
   # fronts it (README, Deploy). ":3000" binds every interface; do that only on
@@ -42,8 +45,9 @@ limits:
   # Size of the connection pool, and so the ceiling on concurrent queries.
   max_connections: 10
 
-# Logging: one JSON line per event, to stdout by default. Switch output to
-# "file" to write to a self-rotating log file instead. Remember the log
+# Logging: one JSON line per event, to stdout by default (stderr under
+# --stdio, where stdout carries the protocol). Switch output to "file" to
+# write to a self-rotating log file instead. Remember the log
 # records every query verbatim — on disk that history outlives the session,
 # so protect the file like the data it describes.
 logging:

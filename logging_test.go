@@ -16,7 +16,7 @@ func fileLoggingConfig(t *testing.T, path string) *Config {
 	cfg, err := LoadConfig(writeConfig(t, validConfig+`
 logging:
   output: file
-  file: `+path+"\n"))
+  file: `+path+"\n"), transportHTTP)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestNewLoggerFailsOnUnwritablePath(t *testing.T) {
 }
 
 func TestNewLoggerHonorsLevel(t *testing.T) {
-	cfg, err := LoadConfig(writeConfig(t, validConfig+"logging:\n  level: warn\n"))
+	cfg, err := LoadConfig(writeConfig(t, validConfig+"logging:\n  level: warn\n"), transportHTTP)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}

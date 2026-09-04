@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,7 +14,7 @@ import (
 // silently, so a bad path would otherwise mean a server that runs without
 // logging anything, complaint included.
 func newLogger(cfg *Config) (*slog.Logger, error) {
-	var w io.Writer = os.Stdout
+	w := cfg.console()
 	if cfg.Logging.Output == "file" {
 		if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o755); err != nil {
 			return nil, fmt.Errorf("create log directory: %w", err)

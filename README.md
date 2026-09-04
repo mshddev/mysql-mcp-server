@@ -8,10 +8,11 @@
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](go.mod)
 
 An MCP server that gives AI agents access to MySQL/MariaDB database.
-It is built to run as a shared service, not as a subprocess: you deploy one
-instance on a host near the database, and every agent on the team points at its
-(with a bearer token). The transport is streamable HTTP (MCP spec 2026-07-28,
-stateless). There is no stdio mode.
+It is built to run as a shared service: you deploy one instance on a host near
+the database, and every agent on the team points at its URL (with a bearer
+token). The transport is streamable HTTP (MCP spec 2026-07-28, stateless). For
+a single person and a database on the same machine it can also run as a
+subprocess over stdio, with `--stdio`; see [Stdio](#stdio).
 
 It exposes a single tool, `query`, runs the SQL you send, and returns rows as
 JSON objects.
@@ -170,7 +171,9 @@ curl gets rows back, an MCP client will too — wire one up under
 - **Connection pool** (default 10) — doubles as the concurrency brake.
 - **Bearer token** — checked on every request, compared in constant time. The
   only exceptions are the two health probes, which reveal up or down and nothing
-  else (see [Deploy](#deploy)).
+  else (see [Deploy](#deploy)). Under `--stdio` there is no token: the caller is
+  whoever launched the process, and the operating system decides who can (see
+  [Stdio](#stdio)).
 
 ## Requirements
 
@@ -274,15 +277,15 @@ masking:                # optional; omit the section to run without masking
 | Key | Meaning |
 |---|---|
 | `mode` | `read_only` (default) or `full_access`. See [Safety Model](#safety-model). |
-| `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. |
-| `server.auth_token` | Bearer token clients must present. |
+| `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. Ignored under `--stdio`. |
+| `server.auth_token` | Bearer token clients must present. Ignored under `--stdio`, placeholder included, so one file serves both transports. |
 | `database.host` / `port` | Where the database lives. |
 | `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
 | `database.dbname` | Default database (schema) to connect to. |
 | `limits.timeout_seconds` | Per-query timeout before a server-side kill. |
 | `limits.max_response_bytes` | Result-size cap before truncation. |
 | `limits.max_connections` | Pool size, doubling as the concurrency ceiling. |
-| `logging.output` | `stdout` (default) or `file`. |
+| `logging.output` | `stdout` (default) or `file`. Under `--stdio` the default writes to stderr, since stdout is the wire. |
 | `logging.file` | Log file path; required with `output: file`. |
 | `logging.level` | `debug`, `info` (default), `warn`, or `error`. |
 | `logging.rotation` | For file output: `max_size_mb` (rotate at this size, default 100), `max_backups` / `max_age_days` (0 = keep everything, the default), `compress`. |
@@ -317,6 +320,43 @@ if any. Results are never logged. They go to stdout by default; `logging.output:
 file` writes them to a log file instead, rotated by size with configurable
 retention (see `config.example.yaml`). A log file that can't be created or
 written fails startup rather than running silent.
+
+### Stdio
+
+`--stdio` serves MCP over the process's own stdin and stdout instead of
+listening for HTTP. The client launches the binary itself and speaks to it
+over the pipes, which is the shape of a single person working against a
+database on their own machine:
+
+```bash
+MYSQL_PASSWORD=... mysql-mcp-server --stdio --config /absolute/path/config.yaml
+```
+
+What changes under stdio:
+
+- **No token.** Whoever can launch the process is the caller, so the `server`
+  section is not read at all: `listen`, `auth_token`, and any `${VAR}` in them
+  are ignored, and a config written for the HTTP deployment loads unchanged.
+  The boundary is the operating system — whoever can run the binary and read
+  its config can query the database as its user, so keep the database user
+  read-only and the config file private.
+- **Logs go to stderr**, because stdout is the wire. `logging.output: stdout`
+  means stderr under `--stdio`, and `file` works as before.
+- **No health probes.** There is nothing listening.
+- **One session per process.** The server exits 0 when the client closes the
+  pipe, and each client launch is a fresh process with its own pool.
+
+The client has to keep stdin open for the session, as every MCP client does; a
+one-shot pipe that closes as soon as it has written its requests gets no
+answers. To try it from a shell, hold the pipe open for a moment:
+
+```bash
+(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT 1"}}}'; sleep 1) \
+  | mysql-mcp-server --stdio --config ./config.yaml
+```
 
 ## Deploy
 
@@ -462,8 +502,9 @@ Every agent points at the same server. A client needs three things:
 - **Header** — `Authorization: Bearer <your token>`
 - **Tool** — `query`, one string argument, `sql`
 
-The transport is **streamable HTTP only — there is no stdio mode**, so a client
-that only launches subprocesses can't talk to this.
+The transport is streamable HTTP. A client that can only launch subprocesses
+can run its own copy with `--stdio` instead (see [Stdio](#stdio)); that is a
+per-person server, not a way to reach the shared one.
 
 The server is stateless, so there is no session handshake to do first: a client
 can call `tools/list` or `tools/call` cold, which is also why the curl in
@@ -494,11 +535,30 @@ the same value the server runs with — then restart Claude Code and ask a data
 question. The agent will use `SHOW TABLES` / `DESCRIBE` to find its way around,
 then `SELECT`.
 
+For a local database, let Claude Code launch the server itself over stdio. Use
+an absolute config path: the subprocess starts in the project root, not next
+to the binary.
+
+```json
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "mysql-mcp-server",
+      "args": ["--stdio", "--config", "/home/you/.config/mysql-mcp-server/config.yaml"],
+      "env": {
+        "MYSQL_PASSWORD": "${MYSQL_PASSWORD}"
+      }
+    }
+  }
+}
+```
+
 ### Other clients
 
 Any client that speaks streamable HTTP and can set a header takes the same three
 values. If yours can't set one, put a proxy in front that adds it: the token is
-checked on every request, and it is the only way in.
+checked on every request, and it is the only way in. A client that only speaks
+stdio launches `mysql-mcp-server --stdio --config <path>` as its command.
 
 ## The `query` Tool
 

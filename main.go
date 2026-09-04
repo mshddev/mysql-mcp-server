@@ -45,6 +45,7 @@ type FullAccessQueryInput struct {
 func main() {
 	configPath := flag.String("config", "./config.yaml", "path to YAML config")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	stdio := flag.Bool("stdio", false, "serve MCP over stdin/stdout for the client that launched this process, instead of listening for HTTP")
 	flag.Parse()
 
 	if *showVersion {
@@ -52,10 +53,20 @@ func main() {
 		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	transport := transportHTTP
+	if *stdio {
+		transport = transportStdio
+	}
+	// Nothing but the protocol may touch stdout under stdio, and that holds
+	// for the log line reporting a bad config as much as for any other.
+	console := os.Stdout
+	if *stdio {
+		console = os.Stderr
+	}
+	logger := slog.New(slog.NewJSONHandler(console, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := LoadConfig(*configPath, transport)
 	if err != nil {
 		logger.Error("startup", "error", err.Error())
 		os.Exit(1)
@@ -73,14 +84,15 @@ func main() {
 	// deployer's one reliable notice of that: it prints on every start, where
 	// a line in a config file or a doc page only reaches whoever reads it.
 	if cfg.masker != nil && cfg.fullAccess() {
-		// This one warning always goes to stdout, whatever logging.output and
-		// logging.level say: routed through the configured logger it would land
-		// in a file nobody opens, or be dropped outright at level error, and the
-		// person deploying a write-enabled server has to see it. Written as a
-		// JSON line like every other, so a collector reading stdout can still
-		// parse the stream. It also goes to the real logger when that writes
-		// somewhere else, so a file log keeps the record.
-		warn := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+		// This one warning always goes to the console (stdout, or stderr
+		// under stdio), whatever logging.output and logging.level say: routed
+		// through the configured logger it would land in a file nobody opens,
+		// or be dropped outright at level error, and the person deploying a
+		// write-enabled server has to see it. Written as a JSON line like
+		// every other, so a collector reading the stream can still parse it.
+		// It also goes to the real logger when that writes somewhere else, so
+		// a file log keeps the record.
+		warn := slog.New(slog.NewJSONHandler(cfg.console(), nil))
 		const msg = "masking is best-effort under full_access, not a guarantee"
 		const detail = "a write can copy PII into tables the mask rules don't name; " +
 			"writes, DDL, and statements the parser can't read run with wire-metadata masking only"
@@ -101,6 +113,62 @@ func main() {
 	}
 	pool.release(probe, false)
 
+	server := newMCPServer(cfg, pool, logger)
+
+	if cfg.stdio() {
+		logger.Info("startup", "transport", transportStdio, "database",
+			cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
+			"masking_values", cfg.masker.scansValues(), "version", version)
+		// Run returns nil when the client closes our stdin, which is how a
+		// stdio session normally ends: the client is done with us.
+		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			logger.Error("shutdown", "error", err.Error())
+			os.Exit(1)
+		}
+		logger.Info("shutdown", "reason", "client closed the session")
+		return
+	}
+
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+
+	logger.Info("startup", "transport", transportHTTP, "listen", cfg.Server.Listen, "database",
+		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
+		"masking_values", cfg.masker.scansValues(), "version", version)
+	srv := &http.Server{
+		Addr:              cfg.Server.Listen,
+		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Must outlive the query timeout or responses get cut off mid-write.
+		WriteTimeout: time.Duration(cfg.Limits.TimeoutSeconds)*time.Second + 30*time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	err = srv.ListenAndServe()
+	logger.Error("shutdown", "error", err.Error())
+	os.Exit(1)
+}
+
+func bearerAuth(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The auth scheme name is case-insensitive per RFC 7235.
+		h := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
+			subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// newMCPServer builds the MCP server with its one tool wired to pool. The
+// result is transport-agnostic: main hands it to the HTTP handler or runs it
+// over stdio.
+func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "mysql-mcp-server",
 		Version: version,
@@ -157,39 +225,5 @@ func main() {
 			return run(ctx, input.SQL)
 		})
 	}
-
-	handler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{Stateless: true},
-	)
-
-	logger.Info("startup", "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "mode", cfg.Mode, "masking", cfg.masker != nil,
-		"masking_values", cfg.masker.scansValues(), "version", version)
-	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		// Must outlive the query timeout or responses get cut off mid-write.
-		WriteTimeout: time.Duration(cfg.Limits.TimeoutSeconds)*time.Second + 30*time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
-	err = srv.ListenAndServe()
-	logger.Error("shutdown", "error", err.Error())
-	os.Exit(1)
-}
-
-func bearerAuth(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The auth scheme name is case-insensitive per RFC 7235.
-		h := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
-			subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return server
 }
