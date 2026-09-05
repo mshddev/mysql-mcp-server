@@ -645,6 +645,33 @@ func TestLoadConfigHTTPConsole(t *testing.T) {
 	}
 }
 
+func TestListensBeyondLoopback(t *testing.T) {
+	tests := []struct {
+		listen string
+		want   bool
+	}{
+		{"127.0.0.1:3000", false},
+		{"localhost:3000", false},
+		{"[::1]:3000", false},
+		{"LOCALHOST:1", false},
+		{":3000", true},
+		{"0.0.0.0:3000", true},
+		{"[::]:3000", true},
+		{"10.0.0.5:3000", true},
+		// Names are not resolved: an unknown one counts as beyond loopback.
+		{"db.internal:3000", true},
+		// Malformed: no warning here, the listen call reports it.
+		{"nonsense", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.listen, func(t *testing.T) {
+			if got := listensBeyondLoopback(tt.listen); got != tt.want {
+				t.Errorf("listensBeyondLoopback(%q) = %v, want %v", tt.listen, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadConfigUnknownTransport(t *testing.T) {
 	_, err := LoadConfig(writeConfig(t, validConfig), "websocket")
 	if err == nil || !strings.Contains(err.Error(), "transport") {

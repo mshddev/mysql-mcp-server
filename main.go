@@ -116,6 +116,19 @@ func main() {
 		}
 	}
 
+	// Nothing listens under stdio, and Server.Listen is left unexpanded
+	// there, so the transport check has to come first.
+	if !cfg.stdio() && listensBeyondLoopback(cfg.Server.Listen) {
+		const msg = "server listens on a non-loopback address"
+		const detail = "the token and query results cross the network in plaintext unless a TLS proxy fronts this address; " +
+			"bind to 127.0.0.1 with the proxy in front, or keep this on a network you trust"
+		warn := slog.New(slog.NewJSONHandler(cfg.console(), nil))
+		warn.Warn(msg, "detail", detail, "listen", cfg.Server.Listen)
+		if cfg.Logging.Output != "stdout" {
+			logger.Warn(msg, "detail", detail, "listen", cfg.Server.Listen)
+		}
+	}
+
 	pool := NewPool(cfg)
 	// Fail fast if the database is unreachable or the session setup is rejected.
 	probeCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)

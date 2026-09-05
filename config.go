@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -300,4 +302,22 @@ func (c *Config) console() io.Writer {
 		return os.Stderr
 	}
 	return os.Stdout
+}
+
+// listensBeyondLoopback reports whether server.listen would accept
+// connections from off the host: an empty host (":3000"), a wildcard or
+// non-loopback IP, or any name other than localhost. Names are not resolved
+// here — a DNS lookup at startup is not worth it, and an unknown name is
+// treated as reaching beyond the host. A malformed address is not this
+// function's problem: the listen call fails with its own error.
+func listensBeyondLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }

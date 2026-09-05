@@ -291,7 +291,7 @@ masking:                # optional; omit the section to run without masking
 | Key | Meaning |
 |---|---|
 | `mode` | `read_only` (default) or `full_access`. See [Safety Model](#safety-model). |
-| `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. Ignored under `--stdio`. |
+| `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. A non-loopback bind warns at startup. Ignored under `--stdio`. |
 | `server.auth_token` | Bearer token clients must present. Ignored under `--stdio`, placeholder included, so one file serves both transports. |
 | `database.host` / `port` | Where the database lives. |
 | `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
@@ -568,7 +568,8 @@ raised and `proxy_buffering off`.
 If the host is already on a private network you trust (a VPC, a VPN, a
 Tailscale tailnet), you can skip the proxy: set `listen: ":3000"` and let
 clients use `http://` on that network. The token then crosses that network in
-the clear, so make that call deliberately.
+the clear, so make that call deliberately. The server logs a warning at
+every start in that state, so the choice stays visible.
 
 **5. Hand out the URL and the token.** The token is the one step 1 wrote to
 `/etc/mysql-mcp-server/env`. Everyone gets the same two values, and
