@@ -480,9 +480,10 @@ ALTER USER 'mcp_readonly'@'%' WITH MAX_USER_CONNECTIONS 12;
 ```
 
 The pool is the server's own brake; this one is the database's, and it holds
-even if the server misbehaves or a second instance is pointed at the same
-user. Leave room for the kill connection each timeout opens, which is why
-this is above the pool size rather than equal to it.
+even if the server misbehaves. Leave room for the kill connection each
+timeout opens, which is why this is above the pool size rather than equal to
+it. A second instance on the same user would hit the cap and be refused
+connections, which is the point: give each instance its own user.
 
 **2. Run it under systemd.** Save as `/etc/systemd/system/mysql-mcp-server.service`:
 
