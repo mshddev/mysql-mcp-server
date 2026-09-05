@@ -167,8 +167,11 @@ curl gets rows back, an MCP client will too — wire one up under
       unparseable statements run with wire-metadata masking only. This follows
       from the mode, so there is nothing to switch on; the server logs a
       warning at startup whenever masking runs alongside write access;
-    - query text in the server log is not scrubbed — and with file logging it
-      persists on disk, so protect log files like the data they describe.
+    - the server log carries the query text and the database's error text.
+      With `masking.values` on, an email or phone shape in either is logged as
+      `<masked>`, but a name, an address, or any other shapeless value still
+      reaches the log — and with file logging it persists on disk, so protect
+      log files like the data they describe.
 - **Response cap** (default 500 KB of result JSON, ~125K tokens) — rows stream
   in and stop once the cap is hit; the response says so and hints to narrow the
   query. The raw HTTP body is roughly double the cap, because MCP encodes tool

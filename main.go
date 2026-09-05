@@ -318,6 +318,20 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 			description += " Write statements are not masking-checked."
 		}
 	}
+	// logText is what the query log gets instead of the raw SQL or error
+	// text: with masking.values on, the same shape detectors that scrub a
+	// result cell run over it, so an email or phone number in a WHERE
+	// literal, a write's VALUES, or a database error that echoes the
+	// statement lands in the log as <masked>. It touches only the copy that
+	// is logged; the statement the database runs and the error the client
+	// gets are the originals. With value scanning off it returns its input.
+	logText := func(s string) string {
+		if !cfg.masker.scansValues() {
+			return s
+		}
+		scrubbed, _ := cfg.masker.scanValue(s)
+		return scrubbed
+	}
 	run := func(ctx context.Context, sql string) (*mcp.CallToolResult, *QueryResult, error) {
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Limits.TimeoutSeconds)*time.Second)
 		defer cancel()
@@ -325,12 +339,12 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		start := time.Now()
 		res, err := pool.Query(queryCtx, sql)
 		attrs := []any{
-			"query", sql,
+			"query", logText(sql),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"truncated", res != nil && res.Truncated,
 		}
 		if err != nil {
-			logger.Error("query", append(attrs, "error", err.Error())...)
+			logger.Error("query", append(attrs, "error", logText(err.Error()))...)
 			return nil, nil, err
 		}
 		logger.Info("query", attrs...)
