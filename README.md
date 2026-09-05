@@ -137,13 +137,15 @@ curl gets rows back, an MCP client will too — wire one up under
     `except` rule shields a plain column from both layers.
   - **JSON cells** get the column rules one level in: inside a cell that holds
     a JSON document (an activity log's `properties`, a request dump), a key
-    named like a bare `mask` entry (`name`, `phone`, `*_email`) has its whole
-    value returned as `"<masked>"`, nested objects included, and
+    named like a bare `mask` entry (`phone`, `address`, `*_email`) has its
+    whole value returned as `"<masked>"`, nested objects included, and
     `masking.values` scans the strings that remain. There is no switch for it;
-    it follows from the rules, and it over-masks on purpose (a `name` key in a
-    room's log entry is hidden like a tenant's). An `except` on the column
-    itself (`activity_log.properties`) is the carve-out, and shields the cell
-    from every layer.
+    it follows from the rules. So a bare rule for a word business data shares
+    over-masks — a bare `name` would hide a room's name in its log entry as
+    readily as a tenant's, which is why the starter list has no such rule.
+    Qualify one (`users.name`) to keep it a column rule that never reaches
+    keys; an `except` on the column itself (`activity_log.properties`) is the
+    other carve-out, and shields the cell from every layer.
   - Still not a wall against a determined caller. Known gaps, documented by
     design (for those, use database-level controls — e.g. a user restricted to
     redacted views):
@@ -281,7 +283,7 @@ logging:
 
 masking:                # optional; omit the section to run without masking
   enabled: true
-  mask: [phone, "*_phone", email, name, address]
+  mask: [phone, "*_phone", email, address]
   except: ["room_types.display_name"]
   values: [email, phone_id]   # optional second layer: mask by shape, not name
 ```

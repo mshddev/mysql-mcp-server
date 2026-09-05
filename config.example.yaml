@@ -113,13 +113,16 @@ logging:
 # phone. Omit "values" to run without it.
 #
 # Inside a JSON-valued cell (an activity log's properties, a request dump), the
-# bare "mask" entries above apply to the keys as well: a "phone" or "name" key
-# anywhere in the document has its whole value returned as "<masked>", nested
-# objects included, and "values" scans the remaining strings. There is no
-# switch for it — masking a column called name means masking name keys too.
-# That over-masks on purpose (a "name" key in a room's log entry is hidden
-# like a tenant's); the carve-out is an "except" on the column itself, e.g.
-# activity_log.properties, which shields the cell from every layer.
+# bare "mask" entries above apply to the keys as well: a "phone" or "address"
+# key anywhere in the document has its whole value returned as "<masked>",
+# nested objects included, and "values" scans the remaining strings. There is
+# no switch for it — masking a column called phone means masking phone keys
+# too. Keep that in mind before adding a bare rule for a word business data
+# shares, "name" above all: a room's log entry has a name key exactly like a
+# tenant's, and the rule can't tell them apart. Qualify it (users.name) to
+# keep it a column rule that never reaches keys, or carve the column out with
+# an "except" (activity_log.properties), which shields the cell from every
+# layer.
 masking:
   enabled: true
   mask:
@@ -128,7 +131,9 @@ masking:
     - phone_number
     - email
     - "*_email"
-    - name          # exact on purpose, NOT "*_name": room_name etc. are business data
+    # Not "name": a bare rule reaches JSON keys too, and the rooms and kos in
+    # an activity log have a name key just like a tenant. Add "users.name" if
+    # the users table's column needs it — qualified rules stay column rules.
     - address
     - "*_address"
     - nik
