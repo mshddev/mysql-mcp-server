@@ -179,6 +179,15 @@ func TestFieldValueToJSON(t *testing.T) {
 			wantSize: len("hello") + 2,
 		},
 		{
+			// MySQL 8 sends a native JSON column with the binary charset, like
+			// a BLOB, but its bytes are text and must reach the JSON walker.
+			name:     "native json column is text, not a binary placeholder",
+			value:    mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte(`{"phone":"0812"}`)),
+			field:    &mysql.Field{Charset: 63, Type: mysql.MYSQL_TYPE_JSON},
+			want:     `{"phone":"0812"}`,
+			wantSize: len(`{"phone":"0812"}`) + 2,
+		},
+		{
 			name:     "string with a nil field",
 			value:    mysql.NewFieldValue(mysql.FieldValueTypeString, 0, []byte("hello")),
 			field:    nil,

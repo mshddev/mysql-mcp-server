@@ -27,6 +27,9 @@ type Masker struct {
 	// values are the shape detectors from masking.values (valuemask.go); they
 	// run over string cells the column rules left alone. Empty means off.
 	values []valueDetector
+	// jsonKeys is whether any mask rule can name a key inside a JSON cell
+	// (jsonmask.go); computed once so the row loop can skip the parse.
+	jsonKeys bool
 	// bestEffort (full_access mode only) lets statements planQuery can't
 	// verify — writes, DDL, anything unparseable — run with wire-tag masking
 	// instead of being refused. Reads it can parse stay strictly checked.
@@ -60,7 +63,7 @@ func NewMasker(mc *MaskingConfig) (*Masker, error) {
 	if len(mask) == 0 && len(values) == 0 {
 		return nil, fmt.Errorf("masking is enabled but has no rules (masking.mask and masking.values are both empty); set masking.enabled: false to opt out")
 	}
-	return &Masker{mask: mask, except: except, values: values}, nil
+	return &Masker{mask: mask, except: except, values: values, jsonKeys: rulesReachKeys(mask)}, nil
 }
 
 func parseRules(list string, entries []string) ([]maskRule, error) {

@@ -135,6 +135,15 @@ curl gets rows back, an MCP client will too — wire one up under
     more, never less. It is best-effort by nature: a name, an address, or a date
     has no shape, so the column rules stay the primary mechanism, and an
     `except` rule shields a plain column from both layers.
+  - **JSON cells** get the column rules one level in: inside a cell that holds
+    a JSON document (an activity log's `properties`, a request dump), a key
+    named like a bare `mask` entry (`name`, `phone`, `*_email`) has its whole
+    value returned as `"<masked>"`, nested objects included, and
+    `masking.values` scans the strings that remain. There is no switch for it;
+    it follows from the rules, and it over-masks on purpose (a `name` key in a
+    room's log entry is hidden like a tenant's). An `except` on the column
+    itself (`activity_log.properties`) is the carve-out, and shields the cell
+    from every layer.
   - Still not a wall against a determined caller. Known gaps, documented by
     design (for those, use database-level controls — e.g. a user restricted to
     redacted views):
@@ -743,6 +752,10 @@ A few rules worth knowing:
   an email address or a phone number becomes `"<masked>"` in place;
   `masked_values` maps each affected column to the detectors that fired, and
   the `note` says so.
+- A cell holding a JSON document keeps its shape, but a key named like a
+  masked column has its value replaced by `"<masked>"`; `masked_json_keys`
+  maps each affected column to those key names, and the `note` says so. A
+  cell nothing matched comes back byte for byte as stored.
 - `DECIMAL` stays a string to keep precision, and so do integers past ±2^53
   (`BIGINT` IDs) — the MCP SDK round-trips numbers through a float64, which would
   otherwise corrupt them.
@@ -783,6 +796,7 @@ config resolves and the database answers.
 | A column comes back `"<masked>"` and shouldn't | A rule matched its name. Put the qualified column in `masking.except` — it beats `mask`. |
 | A column you wanted masked comes back in the clear | Nothing matched it. Rules match a column's *real* name, so a view that renames one needs the view's own column added — or, for emails and phone numbers, `masking.values`. See the views gap in [Safety Model](#safety-model). |
 | Part of a value comes back `"<masked>"` inside otherwise real text | A `masking.values` detector matched its shape — an invoice number that looks like a phone, say. Put the qualified column in `masking.except`, which shields it from both layers, or drop that detector. |
+| A key inside a JSON cell comes back `"<masked>"` and shouldn't | A bare `mask` entry names that key (`name` inside a room's log entry, say); `masked_json_keys` says which. Put the qualified column (`activity_log.properties`) in `masking.except`, which shields the whole cell, or qualify the rule (`users.name`) so it stops reaching keys. |
 | `truncated at ~N bytes — narrow the query (add WHERE or LIMIT)` | The response cap. Narrow the query, or raise `limits.max_response_bytes`. |
 | Every query dies at the same duration | `limits.timeout_seconds`. The kill runs server-side, so the database stops working on it too. |
 | Writes still fail under `full_access` | Grants are the only fence there. Check `SHOW GRANTS`, and confirm the startup line says `"mode":"full_access"`. |

@@ -297,6 +297,10 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 			description += " Text that looks like personal data (an email address, a phone number) is also" +
 				" masked wherever it appears inside a value (listed per result in masked_values)."
 		}
+		if cfg.masker.scansJSON() {
+			description += " Inside a JSON-valued cell, a key named like a masked column has its whole" +
+				" value masked too (listed per result in masked_json_keys)."
+		}
 		if cfg.fullAccess() {
 			description += " Write statements are not masking-checked."
 		}

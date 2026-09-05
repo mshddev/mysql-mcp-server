@@ -111,6 +111,15 @@ logging:
 # rules as the primary mechanism. "except" shields a column from both layers,
 # which is also the fix when a business value (an invoice number) looks like a
 # phone. Omit "values" to run without it.
+#
+# Inside a JSON-valued cell (an activity log's properties, a request dump), the
+# bare "mask" entries above apply to the keys as well: a "phone" or "name" key
+# anywhere in the document has its whole value returned as "<masked>", nested
+# objects included, and "values" scans the remaining strings. There is no
+# switch for it — masking a column called name means masking name keys too.
+# That over-masks on purpose (a "name" key in a room's log entry is hidden
+# like a tenant's); the carve-out is an "except" on the column itself, e.g.
+# activity_log.properties, which shields the cell from every layer.
 masking:
   enabled: true
   mask:

@@ -46,8 +46,12 @@ type QueryResult struct {
 	// phone_id) that masked a span inside at least one of its cells. Distinct
 	// from MaskedColumns: those cells are otherwise real data.
 	MaskedValues map[string][]string `json:"masked_values,omitempty"`
-	Truncated    bool                `json:"truncated"`
-	Note         string              `json:"note,omitempty"`
+	// MaskedJSONKeys maps a result column to the keys the column rules
+	// masked inside its JSON-valued cells (jsonmask.go). Like MaskedValues,
+	// the cell itself is otherwise real data.
+	MaskedJSONKeys map[string][]string `json:"masked_json_keys,omitempty"`
+	Truncated      bool                `json:"truncated"`
+	Note           string              `json:"note,omitempty"`
 	// AffectedRows and LastInsertID report the outcome of a statement that
 	// returned no resultset (INSERT/UPDATE/DELETE/DDL under full_access).
 	// AffectedRows is present even at 0 — "matched nothing" is real
@@ -306,6 +310,7 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	var fields []*mysql.Field
 	var masked, exempt []bool
 	hits := valueHits{}
+	keyHits := valueHits{}
 	var streamResult mysql.Result
 
 	err = conn.ExecuteSelectStreaming(sql, &streamResult,
@@ -326,10 +331,18 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 					// already a placeholder, and INT/FLOAT can't hold an email
 					// or a leading-zero phone number. (DECIMAL is a string cell
 					// and is scanned; the phone shape doesn't match a decimal.)
-					if p.masker.scansValues() && row[i].Type == mysql.FieldValueTypeString &&
+					// A cell that is JSON is walked first, so the column rules
+					// reach its keys and the detectors its leaves; one that is
+					// not, or that nothing inside matched, is plain text to
+					// the raw scan.
+					if (p.masker.scansValues() || p.masker.scansJSON()) && row[i].Type == mysql.FieldValueTypeString &&
 						!isBinaryField(f) && !(i < len(exempt) && exempt[i]) {
 						if s, ok := v.(string); ok {
-							if out, fired := p.masker.scanValue(s); fired != nil {
+							if out, keys, fired, changed := p.masker.maskJSON(s); changed {
+								v, size = out, len(out)+2
+								keyHits.add(i, keys)
+								hits.add(i, fired)
+							} else if out, fired := p.masker.scanValue(s); fired != nil {
 								v, size = out, len(out)+2
 								hits.add(i, fired)
 							}
@@ -405,10 +418,14 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 	// Composed here, at the single success exit, so the truncation note above
 	// cannot overwrite it.
 	res.MaskedValues = hits.report(res.Columns)
+	res.MaskedJSONKeys = keyHits.report(res.Columns)
 	var notes []string
 	if len(res.MaskedColumns) > 0 {
 		notes = append(notes, fmt.Sprintf("values in %s are %q by server PII policy",
 			strings.Join(res.MaskedColumns, ", "), maskedValue))
+	}
+	if len(res.MaskedJSONKeys) > 0 {
+		notes = append(notes, jsonKeyNote(res.MaskedJSONKeys))
 	}
 	if len(res.MaskedValues) > 0 {
 		notes = append(notes, valueMaskNote(res.MaskedValues))
