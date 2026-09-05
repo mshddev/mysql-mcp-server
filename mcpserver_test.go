@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,4 +83,95 @@ func TestMCPServerOverPipeTransport(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server.Run did not return after the client closed the session")
 	}
+}
+
+// The annotations are read straight off the wire rather than from the
+// client's decoded struct: a bare-bool hint decoded as false looks the same
+// whether the server sent false or nothing, and the point is that it sends
+// all five, honestly, in both modes.
+func TestToolAnnotationsPerMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want map[string]any
+	}{
+		{modeReadOnly, map[string]any{
+			"title": "MySQL Query", "readOnlyHint": true, "destructiveHint": false,
+			"idempotentHint": true, "openWorldHint": false,
+		}},
+		{modeFullAccess, map[string]any{
+			"title": "MySQL Query", "readOnlyHint": false, "destructiveHint": true,
+			"idempotentHint": false, "openWorldHint": false,
+		}},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := unitConfig()
+			cfg.Mode = tc.mode
+			tools := listToolsOverHTTP(t, cfg)
+			if len(tools) != 1 || tools[0]["name"] != "query" {
+				t.Fatalf("tools = %v, want exactly one named query", tools)
+			}
+			got, ok := tools[0]["annotations"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool has no annotations object: %v", tools[0])
+			}
+			for k, want := range tc.want {
+				if v, present := got[k]; !present {
+					t.Errorf("%s missing from the wire; annotations = %v", k, got)
+				} else if v != want {
+					t.Errorf("%s = %v, want %v", k, v, want)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Errorf("annotations = %v, want exactly the keys %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// listToolsOverHTTP sends a cold tools/list through the same handler chain
+// main serves, and returns the tools array as generic JSON.
+func listToolsOverHTTP(t *testing.T, cfg *Config) []map[string]any {
+	t.Helper()
+	server := newMCPServer(cfg, NewPool(cfg), slog.New(slog.DiscardHandler))
+	handler := routes(cfg.Server.AuthToken, newHealth(func(context.Context) error { return nil }),
+		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
+			&mcp.StreamableHTTPOptions{Stateless: true}))
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.AuthToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tools/list: status %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// The stateless handler may answer as plain JSON or as one SSE event.
+	body := rec.Body.String()
+	if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") {
+		var data []string
+		for _, line := range strings.Split(body, "\n") {
+			if rest, ok := strings.CutPrefix(line, "data:"); ok {
+				data = append(data, strings.TrimSpace(rest))
+			}
+		}
+		body = strings.Join(data, "")
+	}
+	var msg struct {
+		Result struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &msg); err != nil {
+		t.Fatalf("decode tools/list response %q: %v", body, err)
+	}
+	if msg.Error != nil {
+		t.Fatalf("tools/list error: %s", msg.Error.Message)
+	}
+	return msg.Result.Tools
 }

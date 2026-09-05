@@ -6,10 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -149,7 +152,6 @@ func main() {
 		cfg.Database.Host, "tls", cfg.tlsOn(), "mode", cfg.Mode, "masking", cfg.masker != nil,
 		"masking_values", cfg.masker.scansValues(), "version", version)
 	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
 		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -157,9 +159,73 @@ func main() {
 		WriteTimeout: time.Duration(cfg.Limits.TimeoutSeconds)*time.Second + 30*time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	err = srv.ListenAndServe()
-	logger.Error("shutdown", "error", err.Error())
-	os.Exit(1)
+	// Bound separately from serving so a port already in use fails here,
+	// before any signal handling is armed.
+	ln, err := net.Listen("tcp", cfg.Server.Listen)
+	if err != nil {
+		logger.Error("startup", "error", err.Error())
+		os.Exit(1)
+	}
+	// systemd stops the unit with SIGTERM; an operator's Ctrl-C is SIGINT.
+	// Both drain. stop() is deferred so that once the first signal has been
+	// taken a second one falls back to the default action, killing the
+	// process outright: the escape hatch when the drain itself is what hangs.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := serveHTTP(ctx, srv, ln, pool, logger, drainTimeout(cfg)); err != nil {
+		logger.Error("shutdown", "error", err.Error())
+		os.Exit(1)
+	}
+}
+
+// maxDrain caps how long a stopping server waits for in-flight requests.
+// systemd sends SIGKILL after TimeoutStopSec, 90s by default, and the pool
+// close and process exit need a little of that; a drain that could run past
+// it would only trade a clean stop for a kill anyway.
+const maxDrain = 80 * time.Second
+
+// drainTimeout gives every in-flight query room to reach its own deadline,
+// where pool.Query's watcher kills it server-side, plus margin for the
+// response to be written. Only past the cap can a statement outlive the
+// process; the session-level statement timeout then ends it on MariaDB, and
+// on MySQL only when it is a SELECT (see setupSession).
+func drainTimeout(cfg *Config) time.Duration {
+	return min(time.Duration(cfg.Limits.TimeoutSeconds)*time.Second+5*time.Second, maxDrain)
+}
+
+// serveHTTP serves srv on ln until it fails or ctx is done. A done ctx means
+// a stop was requested: the listener closes, requests already in progress
+// get up to drain to finish, and the pool's idle connections are closed so
+// the database sees an orderly hangup rather than dropped sockets. It
+// returns nil for that path — a requested stop is not an error — and the
+// serve error for the other.
+func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener, pool *Pool, logger *slog.Logger, drain time.Duration) error {
+	// Buffered so the goroutine can exit even when nobody reads it, which is
+	// the shutdown path: Serve returns ErrServerClosed after the select has
+	// moved on.
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+	// NotifyContext names the signal in the cause; a test cancels with
+	// whatever reason it likes.
+	logger.Info("shutdown", "reason", context.Cause(ctx).Error(), "drain", drain.String())
+	// A fresh context: the one that fired is already done and would end
+	// Shutdown at once.
+	drainCtx, cancel := context.WithTimeout(context.Background(), drain)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		// Requests still running past the bound are abandoned with the
+		// process; the note says so, since the query log will show them
+		// started and never finished.
+		logger.Warn("shutdown", "error", "drain expired with requests still in flight: "+err.Error())
+	}
+	pool.Close()
+	return nil
 }
 
 func bearerAuth(token string, next http.Handler) http.Handler {
@@ -174,6 +240,33 @@ func bearerAuth(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// toolAnnotations tells a client what the query tool can do to the database,
+// which is the mode's decision, not the tool's: under read_only every call is
+// a read the session can't turn into a write, and repeating one changes
+// nothing; under full_access a single statement can drop a table, and running
+// it twice is not the same as once. OpenWorldHint is false either way, the
+// tool talks to one database. The hints are advisory by spec, so they say
+// only what the mode enforces.
+func toolAnnotations(cfg *Config) *mcp.ToolAnnotations {
+	yes, no := true, false
+	if cfg.fullAccess() {
+		return &mcp.ToolAnnotations{
+			Title:           "MySQL Query",
+			ReadOnlyHint:    false,
+			DestructiveHint: &yes,
+			IdempotentHint:  false,
+			OpenWorldHint:   &no,
+		}
+	}
+	return &mcp.ToolAnnotations{
+		Title:           "MySQL Query",
+		ReadOnlyHint:    true,
+		DestructiveHint: &no,
+		IdempotentHint:  true,
+		OpenWorldHint:   &no,
+	}
 }
 
 // newMCPServer builds the MCP server with its one tool wired to pool. The
@@ -226,7 +319,7 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		logger.Info("query", attrs...)
 		return nil, res, nil
 	}
-	tool := &mcp.Tool{Name: "query", Description: description}
+	tool := &mcp.Tool{Name: "query", Description: description, Annotations: toolAnnotations(cfg)}
 	if cfg.fullAccess() {
 		mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input FullAccessQueryInput) (*mcp.CallToolResult, *QueryResult, error) {
 			return run(ctx, input.SQL)

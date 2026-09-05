@@ -230,6 +230,22 @@ func (p *Pool) release(conn *client.Conn, broken bool) {
 	<-p.sem
 }
 
+// Close hangs up the idle connections so a stopping server leaves the
+// database with orderly quits instead of sockets that vanish. Only idle ones:
+// a connection in use belongs to a query that is still finishing, and its
+// release lands after this. The channel itself stays open for that same
+// reason — a late release would panic sending on a closed one.
+func (p *Pool) Close() {
+	for {
+		select {
+		case conn := <-p.idle:
+			conn.Close()
+		default:
+			return
+		}
+	}
+}
+
 // killQuery interrupts a running statement from a dedicated short-lived
 // connection; abandoning the client side alone would leave the query running
 // on the server.

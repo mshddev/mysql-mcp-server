@@ -480,16 +480,7 @@ func newTestPool(t *testing.T, adjust func(*Config)) *Pool {
 		adjust(cfg)
 	}
 	p := NewPool(cfg)
-	t.Cleanup(func() {
-		for {
-			select {
-			case conn := <-p.idle:
-				conn.Close()
-			default:
-				return
-			}
-		}
-	})
+	t.Cleanup(p.Close)
 	return p
 }
 

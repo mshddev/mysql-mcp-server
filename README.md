@@ -513,7 +513,10 @@ stdout` (the default) journald keeps the query log; `journalctl -u
 mysql-mcp-server -f` follows it. If the unit is restart-looping instead, the
 error is in the same place: startup refuses to listen until the config resolves
 and the database answers, and `Restart=on-failure` keeps retrying every five
-seconds.
+seconds. A `systemctl restart` or `stop` is orderly: the server stops taking
+connections, lets the queries already running finish (bounded by
+`limits.timeout_seconds` plus a few seconds, and always under systemd's 90s
+kill), hangs up its database connections, and exits 0.
 
 **3. Terminate TLS in front.** Any reverse proxy works. With
 [Caddy](https://caddyserver.com), the whole `Caddyfile` is:
