@@ -62,6 +62,14 @@ func TestQueryJSONMasking(t *testing.T) {
 		if got := res.MaskedJSONKeys["doc"]; len(got) != 1 || got[0] != "name" {
 			t.Errorf("MaskedJSONKeys = %v, want doc: [name]", res.MaskedJSONKeys)
 		}
+		// Only keys matched here: no detector fired, so the value layer must
+		// stay silent in both the field and the note.
+		if res.MaskedValues != nil {
+			t.Errorf("MaskedValues = %v, want nil when only keys matched", res.MaskedValues)
+		}
+		if strings.Contains(res.Note, "text matching") {
+			t.Errorf("Note = %q, carries a value-mask sentence with no detector", res.Note)
+		}
 	})
 
 	t.Run("no hit leaves the cell byte-identical", func(t *testing.T) {

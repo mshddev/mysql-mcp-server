@@ -143,6 +143,13 @@ func (m *Masker) scansValues() bool { return m != nil && len(m.values) > 0 }
 type valueHits map[int]map[string]bool
 
 func (h valueHits) add(col int, names []string) {
+	// Nothing fired means no entry: a column map created for an empty list
+	// would be reported as a column with no detectors, and grow a note
+	// sentence to match. The JSON walker feeds this with nil whenever only
+	// keys matched.
+	if len(names) == 0 {
+		return
+	}
 	if h[col] == nil {
 		h[col] = map[string]bool{}
 	}

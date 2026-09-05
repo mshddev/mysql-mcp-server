@@ -133,6 +133,17 @@ func TestValueHitsReport(t *testing.T) {
 	}
 }
 
+// A call with nothing fired must not register the column: the report would
+// otherwise carry an entry with an empty list.
+func TestValueHitsAddNothing(t *testing.T) {
+	h := valueHits{}
+	h.add(0, nil)
+	h.add(1, []string{})
+	if got := h.report([]string{"a", "b"}); got != nil {
+		t.Errorf("report = %v after adding nothing, want nil", got)
+	}
+}
+
 func TestValueMaskNote(t *testing.T) {
 	got := valueMaskNote(map[string][]string{"payload": {"phone_id"}, "notes": {"email", "phone_id"}})
 	want := `text matching email, phone_id patterns is "<masked>" inside notes, payload by server PII policy`
