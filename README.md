@@ -472,6 +472,18 @@ sudo chgrp mysql-mcp /etc/mysql-mcp-server/env
 Edit `config.yaml` as in the Quickstart. Leave `listen` at `127.0.0.1:3000`;
 the proxy is what faces the network.
 
+On the database, cap the user's connections just above `limits.max_connections`
+(the pool, 10 by default):
+
+```sql
+ALTER USER 'mcp_readonly'@'%' WITH MAX_USER_CONNECTIONS 12;
+```
+
+The pool is the server's own brake; this one is the database's, and it holds
+even if the server misbehaves or a second instance is pointed at the same
+user. Leave room for the kill connection each timeout opens, which is why
+this is above the pool size rather than equal to it.
+
 **2. Run it under systemd.** Save as `/etc/systemd/system/mysql-mcp-server.service`:
 
 ```ini
@@ -548,9 +560,10 @@ the clear, so make that call deliberately.
 
 **5. Hand out the URL and the token.** The token is the one step 1 wrote to
 `/etc/mysql-mcp-server/env`. Everyone gets the same two values, and
-[Connect a Client](#connect-a-client) shows where they go. There is one token
-per deployment, so the query log tells you what ran but not who ran it; rotate
-it by editing the env file and restarting the unit.
+[Connect a Client](#connect-a-client) shows where they go. Rotating the token
+is editing the env file and restarting the unit. There is no overlap window:
+the old value stops working the moment the unit restarts, so hand out the new
+one first.
 
 verify, from a laptop:
 
@@ -561,6 +574,32 @@ curl -s https://mysql-mcp.internal.example.com/readyz
 `{"status":"ok"}` means the whole path works: proxy, TLS, server, database.
 Add the token and run the Quickstart's `tools/call` curl against the same host
 to prove the last step too.
+
+**6. Prove the fences before the team connects.** A config copied from staging
+is how production ends up writable. Run each of these through the Quickstart's
+`tools/call` curl against the production URL, and stop if any one of them
+returns data instead of an error:
+
+```sql
+UPDATE users SET name = 'x' WHERE id = 1;     -- an error, not affected_rows
+SELECT phone FROM users LIMIT 1;              -- "<masked>", named in masked_columns
+SELECT * FROM (SELECT * FROM users) t;        -- refused: masking can't verify it
+```
+
+Then the same curl with no `Authorization` header, which must get `401`. Repeat
+the list after every upgrade or config change; it takes a minute and it is the
+only proof that the guards you think are on actually are.
+
+**Where things are recorded.** Three logs, each holding a different part of
+the story. The server log (journald, with the default `logging.output`) has
+every statement verbatim with its duration and error, and never the rows. The
+proxy's access log has the caller's address, status, and timing, but not the
+SQL, which travels in the request body. The database's own general log or
+audit plugin is the only record on the database's side, and it contains the
+values from every `WHERE` clause, so protect it like the tables it describes.
+None of the three names a person: one token and one database user serve the
+whole team, so the trail ends at "someone with the token". Per-person tokens
+are the planned fix.
 
 **Health checks.** Two paths answer a bare `GET` (or `HEAD`) with no token,
 which is what load balancers, container probes, and uptime monitors send:
@@ -605,7 +644,7 @@ expansion:
 ```json
 {
   "mcpServers": {
-    "mysql": {
+    "db-staging": {
       "url": "https://mysql-mcp.internal.example.com/mcp",
       "type": "http",
       "headers": {
@@ -616,11 +655,32 @@ expansion:
 }
 ```
 
+Name the entry for the environment it reaches — `db-staging`,
+`db-prod-readonly` — not `mysql`. The agent picks a server by its name, and a
+vague one is how it ends up querying the wrong database once two are
+configured.
+
 Commit that file and everyone on the repo gets the same server; the token comes
 from each person's shell. Export `MYSQL_MCP_AUTH_TOKEN` in your shell profile —
 the same value the server runs with — then restart Claude Code and ask a data
 question. The agent will use `SHOW TABLES` / `DESCRIBE` to find its way around,
 then `SELECT`.
+
+For a production server, make every query ask first. In the project's
+`.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "ask": ["mcp__db-prod-readonly__query"]
+  }
+}
+```
+
+The name is `mcp__<server>__<tool>`. Each call to that server now stops for a
+person to approve before it runs, while staging stays hands-off. It is cheap
+insurance on top of the read-only user: the agent still can't write, but a
+`SELECT` that scans a large table on production is worth a glance too.
 
 For a local database, let Claude Code launch the server itself over stdio. Use
 an absolute config path: the subprocess starts in the project root, not next
