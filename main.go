@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -332,13 +334,21 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		scrubbed, _ := cfg.masker.scanValue(s)
 		return scrubbed
 	}
-	run := func(ctx context.Context, sql string) (*mcp.CallToolResult, *QueryResult, error) {
+	run := func(ctx context.Context, req *mcp.CallToolRequest, sql string) (*mcp.CallToolResult, *QueryResult, error) {
+		// Extra is nil under stdio, where no HTTP request carries a header;
+		// every id is then a generated one.
+		var header http.Header
+		if req.Extra != nil {
+			header = req.Extra.Header
+		}
+		id := requestID(header)
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Limits.TimeoutSeconds)*time.Second)
 		defer cancel()
 
 		start := time.Now()
 		res, err := pool.Query(queryCtx, sql)
 		attrs := []any{
+			"request_id", id,
 			"query", logText(sql),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"truncated", res != nil && res.Truncated,
@@ -353,12 +363,52 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 	tool := &mcp.Tool{Name: "query", Description: description, Annotations: toolAnnotations(cfg)}
 	if cfg.fullAccess() {
 		mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input FullAccessQueryInput) (*mcp.CallToolResult, *QueryResult, error) {
-			return run(ctx, input.SQL)
+			return run(ctx, req, input.SQL)
 		})
 	} else {
 		mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, input QueryInput) (*mcp.CallToolResult, *QueryResult, error) {
-			return run(ctx, input.SQL)
+			return run(ctx, req, input.SQL)
 		})
 	}
 	return server
+}
+
+// requestID is the id both of a query's log lines carry: the caller's
+// X-Request-Id when it is one this server accepts, else a fresh one. A proxy
+// that stamps the header and records it in its own access log lets one call
+// be followed across both logs. The id is logged and nothing more: it is not
+// echoed in a response header or put in the tool result.
+func requestID(h http.Header) string {
+	if id := h.Get("X-Request-Id"); validRequestID(id) {
+		return id
+	}
+	return newRequestID()
+}
+
+// validRequestID accepts 1 to 64 bytes of [A-Za-z0-9._-] and nothing else.
+// The header is caller-controlled input headed for a log line operators
+// grep: the cap bounds its size and the charset keeps out whitespace,
+// lookalikes, and anything that could pass for a second field. A value that
+// fails is dropped whole, not cleaned; a mangled id would pass for a real one.
+func validRequestID(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// newRequestID is 8 random bytes as 16 lowercase hex characters.
+func newRequestID() string {
+	var b [8]byte
+	// crypto/rand.Read cannot fail as of Go 1.24; it aborts the process
+	// instead of returning an error.
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }

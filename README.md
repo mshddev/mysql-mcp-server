@@ -407,11 +407,11 @@ export MYSQL_PASSWORD=...         # password of the DB user
 mysql-mcp-server --config ./config.yaml
 ```
 
-Logs are one JSON line per query — time, SQL, duration, truncated flag, error
-if any. Results are never logged. They go to stdout by default; `logging.output:
-file` writes them to a log file instead, rotated by size with configurable
-retention (see `config.example.yaml`). A log file that can't be created or
-written fails startup rather than running silent.
+Logs are one JSON line per query — time, request id, SQL, duration, truncated
+flag, error if any. Results are never logged. They go to stdout by default;
+`logging.output: file` writes them to a log file instead, rotated by size with
+configurable retention (see `config.example.yaml`). A log file that can't be
+created or written fails startup rather than running silent.
 
 ### Stdio
 
@@ -550,7 +550,9 @@ kill), hangs up its database connections, and exits 0.
 
 ```
 mysql-mcp.internal.example.com {
+	request_header X-Request-Id {http.request.uuid}
 	reverse_proxy 127.0.0.1:3000
+	log
 }
 ```
 
@@ -559,11 +561,18 @@ For a name that only resolves inside your network, either hand it your own
 certificate with `tls cert.pem key.pem`, or add `tls internal` and install
 Caddy's root CA on every laptop that will connect.
 
+The `request_header` line gives each request an id: Caddy sends it upstream as
+`X-Request-Id`, which the server logs as `request_id` on the query line, and
+records the same value as `uuid` in its access log, the one the `log` line
+turns on (Caddy 2.8 or later for the field).
+
 Two things any proxy has to get right. Its upstream timeout must exceed
 `limits.timeout_seconds` with room to spare, or a slow query comes back as a
 `504` instead of a result. And it must not buffer `text/event-stream`
 responses. Caddy does both out of the box; nginx needs `proxy_read_timeout`
-raised and `proxy_buffering off`.
+raised and `proxy_buffering off`, and for the request id
+`proxy_set_header X-Request-Id $request_id;` plus `$request_id` in its
+`log_format`.
 
 **4. Open only the proxy's port.** `443` in, from wherever the agents run.
 `3000` stays on loopback and never appears in a firewall rule.
@@ -608,9 +617,12 @@ only proof that the guards you think are on actually are.
 
 **Where things are recorded.** Three logs, each holding a different part of
 the story. The server log (journald, with the default `logging.output`) has
-every statement verbatim with its duration and error, and never the rows. The
-proxy's access log has the caller's address, status, and timing, but not the
-SQL, which travels in the request body. The database's own general log or
+every statement with its duration and error, verbatim by default and with
+email and phone shapes scrubbed when `masking.values` is on, and never the
+rows. The proxy's access log has the caller's address, status, and timing, but
+not the SQL, which travels in the request body. With the proxy stamping ids as
+in step 3, the server line's `request_id` is the id in the proxy's access log,
+so one call can be followed across both. The database's own general log or
 audit plugin is the only record on the database's side, and it contains the
 values from every `WHERE` clause, so protect it like the tables it describes.
 None of the three names a person: one token and one database user serve the
