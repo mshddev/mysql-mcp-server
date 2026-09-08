@@ -53,7 +53,11 @@ func TestQueryJSONMasking(t *testing.T) {
 		if !strings.Contains(doc, `"name": "<masked>"`) && !strings.Contains(doc, `"name":"<masked>"`) {
 			t.Errorf("doc = %q, want the name key masked", doc)
 		}
-		if strings.Contains(doc, "row-1-") {
+		// Which row id 1 holds depends on the engine: the seed's INSERT ...
+		// SELECT has no ORDER BY, and MySQL and MariaDB emit the cross join
+		// in different orders. Every filler starts with "row-", which is
+		// what the leak check needs.
+		if strings.Contains(doc, "row-") {
 			t.Errorf("doc = %q, the filler leaked", doc)
 		}
 		if !strings.Contains(doc, `"id"`) {
@@ -88,7 +92,8 @@ func TestQueryJSONMasking(t *testing.T) {
 	t.Run("excepted column is shielded from the walker", func(t *testing.T) {
 		p := newPool(t, &MaskingConfig{Mask: []string{"name"}, Except: []string{"big.filler"}})
 		res := mustQuery(t, p, "SELECT filler FROM big WHERE id = 1")
-		if got, _ := res.Rows[0]["filler"].(string); !strings.HasPrefix(got, "row-1-") {
+		// "row-" rather than "row-1-": see the JSON_OBJECT case above.
+		if got, _ := res.Rows[0]["filler"].(string); !strings.HasPrefix(got, "row-") {
 			t.Errorf("filler = %q, want the real value", got)
 		}
 	})
