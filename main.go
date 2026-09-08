@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -163,11 +162,11 @@ func main() {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 
-	logger.Info("startup", "transport", transportHTTP, "listen", cfg.Server.Listen, "database",
-		cfg.Database.Host, "tls", cfg.tlsOn(), "mode", cfg.Mode, "masking", cfg.masker != nil,
-		"masking_values", cfg.masker.scansValues(), "version", version)
+	logger.Info("startup", "transport", transportHTTP, "listen", cfg.Server.Listen, "callers",
+		len(cfg.Server.AuthTokens), "database", cfg.Database.Host, "tls", cfg.tlsOn(), "mode", cfg.Mode,
+		"masking", cfg.masker != nil, "masking_values", cfg.masker.scansValues(), "version", version)
 	srv := &http.Server{
-		Handler:           routes(cfg.Server.AuthToken, newHealth(pool.ping), handler),
+		Handler:           routes(cfg.Server.AuthTokens, newHealth(pool.ping), handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// Must outlive the query timeout or responses get cut off mid-write.
@@ -241,20 +240,6 @@ func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener, pool *Poo
 	}
 	pool.Close()
 	return nil
-}
-
-func bearerAuth(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The auth scheme name is case-insensitive per RFC 7235.
-		h := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) ||
-			subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // toolAnnotations tells a client what the query tool can do to the database,
@@ -335,11 +320,14 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		return scrubbed
 	}
 	run := func(ctx context.Context, req *mcp.CallToolRequest, sql string) (*mcp.CallToolResult, *QueryResult, error) {
-		// Extra is nil under stdio, where no HTTP request carries a header;
-		// every id is then a generated one.
+		// Extra is nil under stdio, where no HTTP request carries a header
+		// or a token: every id is then a generated one, and there is no
+		// caller to name.
 		var header http.Header
+		var caller string
 		if req.Extra != nil {
 			header = req.Extra.Header
+			caller = callerName(req.Extra.TokenInfo)
 		}
 		id := requestID(header)
 		queryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Limits.TimeoutSeconds)*time.Second)
@@ -347,12 +335,17 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 
 		start := time.Now()
 		res, err := pool.Query(queryCtx, sql)
-		attrs := []any{
+		// The caller leads: it is the field the log is read by.
+		var attrs []any
+		if caller != "" {
+			attrs = append(attrs, "caller", caller)
+		}
+		attrs = append(attrs,
 			"request_id", id,
 			"query", logText(sql),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"truncated", res != nil && res.Truncated,
-		}
+		)
 		if err != nil {
 			logger.Error("query", append(attrs, "error", logText(err.Error()))...)
 			return nil, nil, err
@@ -379,18 +372,20 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 // be followed across both logs. The id is logged and nothing more: it is not
 // echoed in a response header or put in the tool result.
 func requestID(h http.Header) string {
-	if id := h.Get("X-Request-Id"); validRequestID(id) {
+	if id := h.Get("X-Request-Id"); validLogID(id) {
 		return id
 	}
 	return newRequestID()
 }
 
-// validRequestID accepts 1 to 64 bytes of [A-Za-z0-9._-] and nothing else.
-// The header is caller-controlled input headed for a log line operators
-// grep: the cap bounds its size and the charset keeps out whitespace,
-// lookalikes, and anything that could pass for a second field. A value that
-// fails is dropped whole, not cleaned; a mangled id would pass for a real one.
-func validRequestID(s string) bool {
+// validLogID accepts 1 to 64 bytes of [A-Za-z0-9._-] and nothing else. It
+// vets the two identifiers that reach a log line from outside: a request id
+// from a header, and a caller name from the config. Both are headed for a
+// line operators grep: the cap bounds the size and the charset keeps out
+// whitespace, lookalikes, and anything that could pass for a second field. A
+// value that fails is dropped whole, not cleaned; a mangled id would pass
+// for a real one.
+func validLogID(s string) bool {
 	if len(s) == 0 || len(s) > 64 {
 		return false
 	}

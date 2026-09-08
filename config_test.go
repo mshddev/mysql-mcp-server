@@ -13,7 +13,8 @@ import (
 // the failure cases below.
 const validConfig = `
 server:
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   host: 127.0.0.1
   username: mcp_readonly
@@ -147,7 +148,8 @@ func TestLoadConfigOverridesDefaults(t *testing.T) {
 	cfg, err := LoadConfig(writeConfig(t, `
 server:
   listen: 0.0.0.0:9999
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   host: 127.0.0.1
   username: mcp_readonly
@@ -191,7 +193,8 @@ func TestLoadConfigEnvExpansion(t *testing.T) {
 			t.Setenv("MCP_TEST_DB_PASSWORD", tt.value)
 			cfg, err := LoadConfig(writeConfig(t, `
 server:
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   host: 127.0.0.1
   username: mcp_readonly
@@ -220,7 +223,8 @@ func TestLoadConfigExpandsEveryField(t *testing.T) {
 	cfg, err := LoadConfig(writeConfig(t, `
 server:
   listen: ${MCP_TEST_LISTEN}
-  auth_token: ${MCP_TEST_TOKEN}
+  auth_tokens:
+    dev: ${MCP_TEST_TOKEN}
 database:
   host: ${MCP_TEST_HOST}
   username: ${MCP_TEST_USER}
@@ -235,7 +239,7 @@ logging:
 	}
 
 	got := []string{
-		cfg.Server.Listen, cfg.Server.AuthToken, cfg.Database.Host,
+		cfg.Server.Listen, cfg.Server.AuthTokens["dev"], cfg.Database.Host,
 		cfg.Database.Username, cfg.Database.Password, cfg.Database.DBName,
 		cfg.Logging.File,
 	}
@@ -403,7 +407,7 @@ func TestLoadConfigErrors(t *testing.T) {
 		wantOut string
 	}{
 		{
-			name: "missing auth token",
+			name: "missing auth tokens",
 			body: `
 database:
   host: 127.0.0.1
@@ -411,27 +415,56 @@ database:
   password: devpassword
   dbname: mcp_dev
 `,
-			wantIn: []string{"auth_token"},
+			wantIn: []string{"server.auth_tokens", "at least one"},
+		},
+		{
+			name:   "empty auth tokens map",
+			body:   strings.Replace(validConfig, "auth_tokens:\n    dev: s3cret", "auth_tokens: {}", 1),
+			wantIn: []string{"server.auth_tokens", "at least one"},
 		},
 		{
 			name:  "auth token expands to empty",
 			setup: func(t *testing.T) { t.Setenv("MCP_TEST_TOKEN", "") },
 			body: `
 server:
-  auth_token: ${MCP_TEST_TOKEN}
+  auth_tokens:
+    dev: ${MCP_TEST_TOKEN}
 database:
   host: 127.0.0.1
   username: mcp_readonly
   password: devpassword
   dbname: mcp_dev
 `,
-			wantIn: []string{"auth_token"},
+			wantIn: []string{"server.auth_tokens.dev", "empty"},
+		},
+		{
+			name:   "token with whitespace",
+			body:   strings.Replace(validConfig, "dev: s3cret", `dev: "s3c ret"`, 1),
+			wantIn: []string{"server.auth_tokens.dev", "whitespace"},
+		},
+		{
+			name:   "caller name with a space",
+			body:   strings.Replace(validConfig, "dev: s3cret", `"a b": s3cret`, 1),
+			wantIn: []string{"server.auth_tokens", `"a b"`},
+		},
+		{
+			name:   "caller name too long",
+			body:   strings.Replace(validConfig, "dev: s3cret", strings.Repeat("x", 65)+": s3cret", 1),
+			wantIn: []string{"server.auth_tokens", "64"},
+		},
+		{
+			// Two names on one token would leave the log guessing which
+			// of them ran a query.
+			name:   "two callers share a token",
+			body:   strings.Replace(validConfig, "dev: s3cret", "bob: s3cret\n    alice: s3cret", 1),
+			wantIn: []string{"server.auth_tokens", "alice and bob share one token"},
 		},
 		{
 			name: "missing host",
 			body: `
 server:
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   username: mcp_readonly
   password: devpassword
@@ -443,7 +476,8 @@ database:
 			name: "missing username",
 			body: `
 server:
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   host: 127.0.0.1
   password: devpassword
@@ -455,7 +489,8 @@ database:
 			name: "missing dbname",
 			body: `
 server:
-  auth_token: s3cret
+  auth_tokens:
+    dev: s3cret
 database:
   host: 127.0.0.1
   username: mcp_readonly
@@ -497,7 +532,8 @@ database:
 			name: "unset environment variable",
 			body: `
 server:
-  auth_token: ${` + unsetVar + `}
+  auth_tokens:
+    dev: ${` + unsetVar + `}
 database:
   host: 127.0.0.1
   username: mcp_readonly
@@ -506,13 +542,14 @@ database:
 `,
 			wantIn: []string{"unset environment variables", unsetVar},
 			// The name of the variable is reported, never a partly-expanded value.
-			wantOut: "auth_token must not be empty",
+			wantOut: "must not be empty",
 		},
 		{
 			name: "several unset environment variables",
 			body: `
 server:
-  auth_token: ${` + unsetVar + `_A}
+  auth_tokens:
+    dev: ${` + unsetVar + `_A}
 database:
   host: ${` + unsetVar + `_B}
   username: mcp_readonly
@@ -523,7 +560,7 @@ database:
 		},
 		{
 			name:   "malformed yaml",
-			body:   "server:\n  auth_token: [unclosed\n",
+			body:   "server:\n  auth_tokens: [unclosed\n",
 			wantIn: []string{"parse config"},
 		},
 	}
@@ -594,7 +631,8 @@ database:
 			body: `
 server:
   listen: ${` + unsetVar + `}
-  auth_token: ${` + unsetVar + `}
+  auth_tokens:
+    dev: ${` + unsetVar + `}
 database:
   host: 127.0.0.1
   username: mcp_readonly

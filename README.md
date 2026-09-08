@@ -9,8 +9,9 @@
 
 An MCP server that gives AI agents access to MySQL/MariaDB database.
 It is built to run as a shared service: you deploy one instance on a host near
-the database, and every agent on the team points at its URL (with a bearer
-token). The transport is streamable HTTP (MCP spec 2026-07-28, stateless). For
+the database, and every agent on the team points at its URL, each with its
+own bearer token so the query log names who ran what. The transport is
+streamable HTTP (MCP spec 2026-07-28, stateless). For
 a single person and a database on the same machine it can also run as a
 subprocess over stdio, with `--stdio`; see [Stdio](#stdio).
 
@@ -67,7 +68,9 @@ curl -fsSL -o config.yaml https://raw.githubusercontent.com/mshddev/mysql-mcp-se
 ```
 
 (From a clone, that's `cp config.example.yaml config.yaml`.) Edit `database`
-to match step 1 — host, port, `username`, `dbname`. Then trim
+to match step 1 — host, port, `username`, `dbname`. Under `server.auth_tokens`
+rename `alice` to yourself: that name is what the query log records for every
+call made with the token. Then trim
 `masking.mask` to columns your schema actually has; it ships as a starter list
 because forgetting one is the failure mode. Everything else has a working
 default, and [Configure](#configure) documents the rest.
@@ -75,16 +78,17 @@ default, and [Configure](#configure) documents the rest.
 **4. Run it.**
 
 ```bash
-export MYSQL_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
-echo "$MYSQL_MCP_AUTH_TOKEN"          # your client needs this in step 5
+export MYSQL_MCP_TOKEN_ALICE="$(openssl rand -hex 32)"   # the variable your entry names
+echo "$MYSQL_MCP_TOKEN_ALICE"         # your client needs this in step 5
 export MYSQL_PASSWORD='a-strong-password'
 mysql-mcp-server --config ./config.yaml
 ```
 
-It stays in the foreground, and a healthy start logs one line:
+It stays in the foreground, and a healthy start logs one line, `callers`
+counting the entries under `auth_tokens`:
 
 ```json
-{"time":"...","level":"INFO","msg":"startup","listen":"127.0.0.1:3000","database":"127.0.0.1","mode":"read_only","masking":true,"version":"0.0.2"}
+{"time":"...","level":"INFO","msg":"startup","transport":"http","listen":"127.0.0.1:3000","callers":1,"database":"127.0.0.1","tls":false,"mode":"read_only","masking":true,"masking_values":true,"version":"0.0.4"}
 ```
 
 If it exits instead, the error says why — [Troubleshooting](#troubleshooting) has
@@ -101,8 +105,10 @@ curl -s -X POST http://127.0.0.1:3000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SHOW TABLES"}}}'
 ```
 
-The reply is a server-sent-event `data:` line carrying the JSON-RPC result. If
-curl gets rows back, an MCP client will too — wire one up under
+The reply is a server-sent-event `data:` line carrying the JSON-RPC result,
+and the server's terminal logs the call with `"caller":"alice"` (or whatever
+you named the entry) in front of the SQL. If curl gets rows back, an MCP
+client will too — wire one up under
 [Connect a Client](#connect-a-client), then move the server to a host under
 [Deploy](#deploy).
 
@@ -183,10 +189,13 @@ curl gets rows back, an MCP client will too — wire one up under
   on MySQL a long-running write is stopped by the `KILL` alone; MariaDB's
   covers every statement except stored procedures.
 - **Connection pool** (default 10) — doubles as the concurrency brake.
-- **Bearer token** — checked on every request, compared in constant time. The
-  only exceptions are the two health probes, which reveal up or down and nothing
-  else (see [Deploy](#deploy)). Under `--stdio` there is no token: the caller is
-  whoever launched the process, and the operating system decides who can (see
+- **Bearer tokens, one per caller** — checked on every request, compared in
+  constant time against every entry in `server.auth_tokens`, and the matching
+  name is logged with the query as `caller`. One person's token can be rotated
+  or revoked without touching anyone else's. The only paths without a token
+  are the two health probes, which reveal up or down and nothing else (see
+  [Deploy](#deploy)). Under `--stdio` there is no token: the caller is whoever
+  launched the process, and the operating system decides who can (see
   [Stdio](#stdio)).
 
 ## Requirements
@@ -255,16 +264,18 @@ cp config.example.yaml config.yaml
 
 `config.yaml` is gitignored. `${VAR}` placeholders are pulled from the
 environment, so nothing sensitive lands in the file. They work in `listen`,
-`auth_token`, `host`, `username`, `password`, `dbname`, the `tls` paths and
-`logging.file`; an unset variable is a startup error naming it, never a silent
-empty string:
+every `auth_tokens` entry, `host`, `username`, `password`, `dbname`, the
+`tls` paths and `logging.file`; an unset variable is a startup error naming
+it, never a silent empty string:
 
 ```yaml
 mode: read_only                # or full_access: writes allowed, grants are the fence
 
 server:
   listen: "127.0.0.1:3000"     # loopback on purpose; a reverse proxy fronts it (see Deploy)
-  auth_token: ${MYSQL_MCP_AUTH_TOKEN}
+  auth_tokens:                 # one per person or agent; the name is logged as "caller"
+    alice: ${MYSQL_MCP_TOKEN_ALICE}
+    bob: ${MYSQL_MCP_TOKEN_BOB}
 
 database:
   host: 127.0.0.1
@@ -295,7 +306,7 @@ masking:                # optional; omit the section to run without masking
 |---|---|
 | `mode` | `read_only` (default) or `full_access`. See [Safety Model](#safety-model). |
 | `server.listen` | Address to bind. Loopback by default, with a TLS-terminating proxy in front. A non-loopback bind warns at startup. Ignored under `--stdio`. |
-| `server.auth_token` | Bearer token clients must present. Ignored under `--stdio`, placeholder included, so one file serves both transports. |
+| `server.auth_tokens` | Bearer tokens, one per caller, as `name: token`. A request is accepted when its token matches an entry, and that entry's name is logged with every query as `caller`. At least one entry; names are 1–64 characters of letters, digits, `.`, `_` or `-`; tokens must be unique and free of whitespace. Ignored under `--stdio`, placeholders included, so one file serves both transports. |
 | `database.host` / `port` | Where the database lives. |
 | `database.username` / `password` | The database user and its password. Read-only under `read_only`; under `full_access` its grants are the write fence. |
 | `database.dbname` | Default database (schema) to connect to. |
@@ -402,13 +413,15 @@ unset.
 ## Run
 
 ```bash
-export MYSQL_MCP_AUTH_TOKEN=...   # token clients must present
+export MYSQL_MCP_TOKEN_ALICE=...  # one variable per auth_tokens entry
 export MYSQL_PASSWORD=...         # password of the DB user
 mysql-mcp-server --config ./config.yaml
 ```
 
-Logs are one JSON line per query — time, request id, SQL, duration, truncated
-flag, error if any. Results are never logged. They go to stdout by default;
+Logs are one JSON line per query — time, caller, request id, SQL, duration,
+truncated flag, error if any. The caller is the `auth_tokens` name whose
+token the request carried, so `grep '"caller":"alice"'` is the history of one
+person. Results are never logged. They go to stdout by default;
 `logging.output: file` writes them to a log file instead, rotated by size with
 configurable retention (see `config.example.yaml`). A log file that can't be
 created or written fails startup rather than running silent.
@@ -427,8 +440,9 @@ MYSQL_PASSWORD=... mysql-mcp-server --stdio --config /absolute/path/config.yaml
 What changes under stdio:
 
 - **No token.** Whoever can launch the process is the caller, so the `server`
-  section is not read at all: `listen`, `auth_token`, and any `${VAR}` in them
-  are ignored, and a config written for the HTTP deployment loads unchanged.
+  section is not read at all: `listen`, `auth_tokens`, and any `${VAR}` in
+  them are ignored, and a config written for the HTTP deployment loads
+  unchanged. Query lines carry no `caller` field.
   The boundary is the operating system — whoever can run the binary and read
   its config can query the database as its user, so keep the database user
   read-only and the config file private.
@@ -467,7 +481,8 @@ it, and a firewall that lets only the proxy's port through.
 too, run as root so the binary lands in `/usr/local/bin`, where the unit below
 expects it (it never calls `sudo` itself, and would otherwise fall back to
 `~/.local/bin`). Then give the service its own user, put the config in place,
-and keep the two secrets in an env file only that user can read:
+and keep the secrets in an env file only that user can read, one token
+variable per person who will connect:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/install.sh | sudo sh
@@ -476,15 +491,17 @@ sudo install -d -m 750 -o root -g mysql-mcp /etc/mysql-mcp-server
 sudo curl -fsSL -o /etc/mysql-mcp-server/config.yaml \
   https://raw.githubusercontent.com/mshddev/mysql-mcp-server/main/config.example.yaml
 sudo tee /etc/mysql-mcp-server/env > /dev/null <<EOF
-MYSQL_MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+MYSQL_MCP_TOKEN_ALICE=$(openssl rand -hex 32)
+MYSQL_MCP_TOKEN_BOB=$(openssl rand -hex 32)
 MYSQL_PASSWORD=a-strong-password
 EOF
 sudo chmod 640 /etc/mysql-mcp-server/env
 sudo chgrp mysql-mcp /etc/mysql-mcp-server/env
 ```
 
-Edit `config.yaml` as in the Quickstart. Leave `listen` at `127.0.0.1:3000`;
-the proxy is what faces the network.
+Edit `config.yaml` as in the Quickstart, with one `auth_tokens` entry per
+variable in the env file (`alice: ${MYSQL_MCP_TOKEN_ALICE}`, and so on).
+Leave `listen` at `127.0.0.1:3000`; the proxy is what faces the network.
 
 On the database, cap the user's connections just above `limits.max_connections`
 (the pool, 10 by default):
@@ -579,16 +596,19 @@ raised and `proxy_buffering off`, and for the request id
 
 If the host is already on a private network you trust (a VPC, a VPN, a
 Tailscale tailnet), you can skip the proxy: set `listen: ":3000"` and let
-clients use `http://` on that network. The token then crosses that network in
+clients use `http://` on that network. The tokens then cross that network in
 the clear, so make that call deliberately. The server logs a warning at
 every start in that state, so the choice stays visible.
 
-**5. Hand out the URL and the token.** The token is the one step 1 wrote to
-`/etc/mysql-mcp-server/env`. Everyone gets the same two values, and
-[Connect a Client](#connect-a-client) shows where they go. Rotating the token
-is editing the env file and restarting the unit. There is no overlap window:
-the old value stops working the moment the unit restarts, so hand out the new
-one first.
+**5. Hand out the URL and the tokens.** Everyone gets the same URL and their
+own token, the one step 1 wrote under their name in `/etc/mysql-mcp-server/env`;
+[Connect a Client](#connect-a-client) shows where they go. A token is one
+person's: never share one between people, or the log stops telling them
+apart. Adding someone is a line in the env file and a matching entry under
+`auth_tokens`, then a restart; rotating or revoking someone is editing or
+deleting their line and restarting, and nobody else's token changes. There is
+no overlap window: the old value stops working the moment the unit restarts,
+so hand out the new one first.
 
 verify, from a laptop:
 
@@ -597,8 +617,8 @@ curl -s https://mysql-mcp.internal.example.com/readyz
 ```
 
 `{"status":"ok"}` means the whole path works: proxy, TLS, server, database.
-Add the token and run the Quickstart's `tools/call` curl against the same host
-to prove the last step too.
+Add your token and run the Quickstart's `tools/call` curl against the same
+host to prove the last step too.
 
 **6. Prove the fences before the team connects.** A config copied from staging
 is how production ends up writable. Run each of these through the Quickstart's
@@ -625,9 +645,10 @@ in step 3, the server line's `request_id` is the id in the proxy's access log,
 so one call can be followed across both. The database's own general log or
 audit plugin is the only record on the database's side, and it contains the
 values from every `WHERE` clause, so protect it like the tables it describes.
-None of the three names a person: one token and one database user serve the
-whole team, so the trail ends at "someone with the token". Per-person tokens
-are the planned fix.
+Only the server log names a person: its `caller` field is the `auth_tokens`
+name the request's token belongs to. The proxy sees an address and the
+database sees one shared user, so a question on their side ("who ran this at
+10:42?") is answered by the server log's line for that request.
 
 **Health checks.** Two paths answer a bare `GET` (or `HEAD`) with no token,
 which is what load balancers, container probes, and uptime monitors send:
@@ -643,7 +664,7 @@ query fails. A result is cached for five seconds, so probing it in a loop costs
 the database one ping per five seconds no matter how many probers there are.
 The body says up or down and nothing else; the reason is in the server log as a
 `readiness` warning. Both paths return `405` to any other method, and every
-other path still requires the token.
+other path still requires a token.
 
 ## Connect a Client
 
@@ -667,7 +688,8 @@ can call `tools/list` or `tools/call` cold, which is also why the curl in
 ### Claude Code
 
 Point `.mcp.json` at the server, keeping the token out of git with `${VAR}`
-expansion:
+expansion. The variable name is the client's own: each person exports their
+token under it, whatever the server side calls theirs:
 
 ```json
 {
@@ -690,8 +712,9 @@ configured.
 
 Commit that file and everyone on the repo gets the same server; the token comes
 from each person's shell. Export `MYSQL_MCP_AUTH_TOKEN` in your shell profile —
-the same value the server runs with — then restart Claude Code and ask a data
-question. The agent will use `SHOW TABLES` / `DESCRIBE` to find its way around,
+the token issued to your name on the server — then restart Claude Code and
+ask a data question. Every query the agent runs is then logged on the server
+under your name. The agent will use `SHOW TABLES` / `DESCRIBE` to find its way around,
 then `SELECT`.
 
 For a production server, make every query ask first. In the project's
@@ -732,7 +755,8 @@ to the binary.
 
 Any client that speaks streamable HTTP and can set a header takes the same three
 values. If yours can't set one, put a proxy in front that adds it: the token is
-checked on every request, and it is the only way in. A client that only speaks
+checked on every request, and it is the only way in. Give each agent its own
+`auth_tokens` entry rather than a person's token, so the log tells them apart. A client that only speaks
 stdio launches `mysql-mcp-server --stdio --config <path>` as its command.
 
 ## The `query` Tool
@@ -792,7 +816,9 @@ config resolves and the database answers.
 
 | What you see | What it means |
 |---|---|
-| `config references unset environment variables: [MYSQL_MCP_AUTH_TOKEN]` | A `${VAR}` in the config has nothing behind it. Export it, or write the literal value in if it isn't a secret. |
+| `config references unset environment variables: [MYSQL_MCP_TOKEN_ALICE]` | A `${VAR}` in the config has nothing behind it. Export it, or write the literal value in if it isn't a secret. |
+| `server.auth_tokens must name at least one caller` | The HTTP server has nobody to admit. Add a `name: token` entry under `server.auth_tokens`. |
+| `server.auth_tokens: alice and bob share one token` | Two entries carry the same value, so the log couldn't tell them apart. Mint a token per person. |
 | `database unreachable: dial tcp …: connect: connection refused` | Wrong host or port, or the database is down. |
 | `database login refused: … ERROR 1045 (28000): Access denied for user …` | Wrong `MYSQL_PASSWORD`, or the user doesn't exist for the host you connect *from*. A default MariaDB install keeps an anonymous `''@'localhost'` that shadows `'user'@'%'` on local connections, so create the `@'localhost'` variant too. |
 | `database login refused: … ERROR 1044 (42000): Access denied for user … to database …` | The user has no grant on `database.dbname` — misspelled, or the `GRANT` named a different schema. |
@@ -802,7 +828,7 @@ config resolves and the database answers.
 | `database certificate is not for this host …` | The certificate's names don't include `database.host`. Set `database.tls.server_name` to one they do include. If the error mentions the legacy Common Name, the certificate has no SAN at all — MySQL's auto-generated one, typically — and only `insecure_skip_verify` or a real certificate will do. |
 | `database login refused: … Access denied` with `tls` on and the user granted `REQUIRE SSL` or `REQUIRE X509` | The database enforces the requirement at login, and a missing client certificate looks exactly like a bad password. Check `SHOW CREATE USER` and add `cert` / `key` if it says `X509`. |
 | `create log directory: mkdir …: read-only file system` | `logging.output: file` pointing somewhere it can't write. The server creates the directory when it can, and fails startup when it can't, rather than running silent. |
-| `401 unauthorized` on every call | Token mismatch. Compare what the client sends with `MYSQL_MCP_AUTH_TOKEN`, and check the header reads `Authorization: Bearer <token>`. |
+| `401` on every call | The token matches no `auth_tokens` entry (body `invalid token`, and the server log has an `auth` warning with the client's address), or the header is missing or malformed (body `no bearer token`). Compare what the client sends with that person's entry, and check the header reads `Authorization: Bearer <token>`. |
 | `405 Method Not Allowed` | You sent a `GET` to the MCP endpoint, or a `POST` to a health probe. MCP calls are `POST`; `/healthz` and `/readyz` are `GET`. |
 | `/readyz` says `degraded` | The database stopped answering after startup. The `readiness` warning in the server log has the driver's error. |
 | `502` or `504` from the proxy | `502`: the service is down, so check `systemctl status mysql-mcp-server`. `504`: the proxy's upstream timeout is shorter than `limits.timeout_seconds`. |
@@ -841,7 +867,7 @@ mysql -h 127.0.0.1 -u root < seed/seed.sql
 Run against it:
 
 ```bash
-MYSQL_MCP_AUTH_TOKEN=localsecret123 MYSQL_PASSWORD=devpassword ./mysql-mcp-server
+MCP_AUTH_TOKEN=localsecret123 MYSQL_PASSWORD=devpassword ./mysql-mcp-server   # config.yaml names one caller, "dev"
 ```
 
 Run the tests:

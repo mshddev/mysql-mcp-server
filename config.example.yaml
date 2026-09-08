@@ -1,9 +1,9 @@
 # Copy to config.yaml (gitignored) and adjust per environment.
 # ${VAR} placeholders are filled from the environment. They work in every
-# text setting the server reads that way — listen, auth_token, host,
-# username, password, dbname, the tls paths and logging.file — not just the
-# two secrets below. An unset variable is a startup error naming it, never a silent
-# empty string.
+# text setting the server reads that way — listen, each auth_tokens entry,
+# host, username, password, dbname, the tls paths and logging.file — not just
+# the secrets below. An unset variable is a startup error naming it, never a
+# silent empty string.
 # These defaults point at a local dev database seeded via seed/seed.sql.
 
 # What the server itself lets through:
@@ -17,13 +17,22 @@ mode: read_only
 
 # The whole server section is ignored under --stdio (the client that launched
 # the process is the only caller), placeholders included, so this file loads
-# there without MYSQL_MCP_AUTH_TOKEN set.
+# there without the token variables set.
 server:
   # Loopback on purpose: a TLS-terminating reverse proxy on the same host
   # fronts it (README, Deploy). ":3000" binds every interface; do that only on
-  # a private network you trust, since the token then travels in the clear.
+  # a private network you trust, since the tokens then travel in the clear.
   listen: "127.0.0.1:3000"
-  auth_token: ${MYSQL_MCP_AUTH_TOKEN}
+  # One bearer token per person or agent, keyed by a name. Every query log
+  # line carries that name as "caller", so a token is issued to one person
+  # and revoked by deleting their line. Names are 1-64 characters of letters,
+  # digits, ".", "_" or "-"; tokens must be unique. Mint one with
+  # `openssl rand -hex 32`. A team that wants a single shared token defines
+  # a single name; the log then names the team.
+  auth_tokens:
+    alice: ${MYSQL_MCP_TOKEN_ALICE}
+    # bob: ${MYSQL_MCP_TOKEN_BOB}
+    # ci-agent: ${MYSQL_MCP_TOKEN_CI}
 
 database:
   host: 127.0.0.1

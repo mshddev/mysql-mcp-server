@@ -449,7 +449,7 @@ func testConfig(t *testing.T) *Config {
 
 	cfg := &Config{}
 	cfg.Server.Listen = "127.0.0.1:0"
-	cfg.Server.AuthToken = "test-token"
+	cfg.Server.AuthTokens = map[string]string{testCaller: testToken}
 	cfg.Database.Host = host
 	cfg.Database.Port = port
 	cfg.Database.Username = envOr("MYSQL_TEST_USER", "mcp_readonly")
