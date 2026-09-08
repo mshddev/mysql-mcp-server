@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,10 @@ type Config struct {
 		// query log records for it. A team that wants one shared token
 		// defines one name.
 		AuthTokens map[string]string `yaml:"auth_tokens"`
+		// AuthToken is the retired single-token key. It is read only so a
+		// config still using it fails with the rename spelled out, instead
+		// of "no callers" with no hint why.
+		AuthToken string `yaml:"auth_token"`
 	} `yaml:"server"`
 	Database struct {
 		Host     string `yaml:"host"`
@@ -252,6 +257,9 @@ func LoadConfig(path, transport string) (*Config, error) {
 		return nil, fmt.Errorf("mode must be %q or %q, got %q", modeReadOnly, modeFullAccess, cfg.Mode)
 	}
 	if !cfg.stdio() {
+		if cfg.Server.AuthToken != "" {
+			return nil, fmt.Errorf("server.auth_token was replaced by server.auth_tokens, a map of caller name to token (name: token)")
+		}
 		if err := validateAuthTokens(cfg.Server.AuthTokens); err != nil {
 			return nil, err
 		}
@@ -314,9 +322,11 @@ func validateAuthTokens(tokens map[string]string) error {
 		if token == "" {
 			return fmt.Errorf("server.auth_tokens.%s must not be empty", name)
 		}
-		if strings.ContainsAny(token, " \t\r\n") {
-			// The Authorization header is split on whitespace, so such a
-			// token could never be presented.
+		if strings.IndexFunc(token, unicode.IsSpace) >= 0 {
+			// The Authorization header is split on Unicode whitespace
+			// (strings.Fields), so such a token could never be presented;
+			// a non-breaking space pasted from a document is the usual way
+			// one gets in.
 			return fmt.Errorf("server.auth_tokens.%s must not contain whitespace", name)
 		}
 		if other, dup := owner[token]; dup {

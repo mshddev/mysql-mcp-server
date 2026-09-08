@@ -24,8 +24,10 @@ func bearerAuth(tokens map[string]string, next http.Handler) http.Handler {
 	verifier := func(_ context.Context, presented string, r *http.Request) (*auth.TokenInfo, error) {
 		name, ok := lookupToken(tokens, presented)
 		if !ok {
-			// A stale token from a real client is worth a line: the
-			// address says who to talk to. Nothing from the token itself
+			// A stale token from a real client is worth a line. The
+			// address is the peer this server saw, which behind the
+			// README's proxy is the proxy; the proxy's own access log has
+			// the client, matched by time. Nothing from the token itself
 			// is logged, a near-miss is still a secret.
 			slog.Warn("auth", "error", "unknown token", "remote", r.RemoteAddr)
 			return nil, fmt.Errorf("%w: unauthorized", auth.ErrInvalidToken)
