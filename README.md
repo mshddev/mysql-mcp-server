@@ -88,7 +88,7 @@ It stays in the foreground, and a healthy start logs one line, `callers`
 counting the entries under `auth_tokens`:
 
 ```json
-{"time":"...","level":"INFO","msg":"startup","transport":"http","listen":"127.0.0.1:3000","callers":1,"database":"127.0.0.1","tls":false,"mode":"read_only","masking":true,"masking_values":true,"version":"0.0.4"}
+{"time":"...","level":"INFO","msg":"startup","transport":"http","listen":"127.0.0.1:3000","callers":1,"database":"127.0.0.1","tls":false,"mode":"read_only","masking":true,"masking_values":true,"version":"0.0.5"}
 ```
 
 If it exits instead, the error says why — [Troubleshooting](#troubleshooting) has
