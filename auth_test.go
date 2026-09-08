@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 )
@@ -242,5 +246,94 @@ func TestCallerName(t *testing.T) {
 	}
 	if got := callerName(&auth.TokenInfo{UserID: "alice"}); got != "alice" {
 		t.Errorf("callerName = %q, want alice", got)
+	}
+}
+
+func TestWarnLimiter(t *testing.T) {
+	clock := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	l := newWarnLimiter(time.Minute, 2, func() time.Time { return clock })
+
+	if n, ok := l.allow("a"); !ok || n != 0 {
+		t.Fatalf("first event for a: (%d, %v), want admitted with nothing suppressed", n, ok)
+	}
+	for i := 0; i < 3; i++ {
+		if _, ok := l.allow("a"); ok {
+			t.Fatalf("repeat %d for a within the interval was admitted", i)
+		}
+	}
+	if n, ok := l.allow("b"); !ok || n != 0 {
+		t.Fatalf("first event for b: (%d, %v), want admitted", n, ok)
+	}
+	// The table is full of fresh keys: a third address is refused, not stored.
+	if _, ok := l.allow("c"); ok {
+		t.Fatal("c was admitted while the table was full of fresh keys")
+	}
+	if len(l.seen) != 2 {
+		t.Fatalf("table holds %d keys, want 2", len(l.seen))
+	}
+
+	clock = clock.Add(time.Minute)
+	// a's interval has passed: admitted again, carrying the count it stood for.
+	if n, ok := l.allow("a"); !ok || n != 3 {
+		t.Fatalf("a after the interval: (%d, %v), want admitted with 3 suppressed", n, ok)
+	}
+	// b is stale too, so c now finds room by evicting it.
+	if _, ok := l.allow("c"); !ok {
+		t.Fatal("c was refused after the stale keys could be evicted")
+	}
+	if _, stale := l.seen["b"]; stale {
+		t.Error("b survived the eviction sweep")
+	}
+}
+
+func TestRemoteHost(t *testing.T) {
+	for addr, want := range map[string]string{
+		"127.0.0.1:54321": "127.0.0.1",
+		"[::1]:8080":      "::1",
+		"192.0.2.1":       "192.0.2.1",
+		"":                "",
+	} {
+		if got := remoteHost(addr); got != want {
+			t.Errorf("remoteHost(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
+// A stream of bad tokens from one address writes one warning, not one per
+// request, and the line names how many it stands for once the interval
+// passes. Addresses are told apart by host, not port.
+func TestBearerAuthWarnsOncePerAddress(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	h := bearerAuth(twoCallers, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	send := func(remote string) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+		req.RemoteAddr = remote
+		req.Header.Set("Authorization", "Bearer stale-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", rec.Code)
+		}
+	}
+	for port := 1; port <= 5; port++ {
+		send(fmt.Sprintf("10.0.0.1:%d", 40000+port))
+	}
+	send("10.0.0.2:40001")
+
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d auth lines, want one per address:\n%s", len(lines), logs.String())
+	}
+	if !strings.Contains(lines[0], `"remote":"10.0.0.1:40001"`) || !strings.Contains(lines[1], `"remote":"10.0.0.2:40001"`) {
+		t.Errorf("lines name the wrong remotes:\n%s", logs.String())
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "stale-token") {
+			t.Errorf("the token leaked into the log: %s", line)
+		}
 	}
 }
