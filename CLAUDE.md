@@ -13,7 +13,7 @@ MYSQL_TEST_ADDR=127.0.0.1:3306 go test ./...   # also run integration tests
 MYSQL_TEST_ADDR=127.0.0.1:3306 MYSQL_TEST_TLS_CA=seed/tls/ca.pem go test ./...   # + the TLS ones (compose DB serves seed/tls)
 docker compose up -d --wait                    # seeded dev DB in a container (podman compose works too)
 mysql -h 127.0.0.1 -u root < seed/seed.sql     # or seed a local MySQL/MariaDB yourself
-MCP_AUTH_TOKEN=... MYSQL_PASSWORD=... ./mysql-mcp-server --config ./config.yaml   # one caller ("dev") in the checked-in config.yaml
+MYSQL_MCP_TOKEN_ALICE=... MYSQL_PASSWORD=... ./mysql-mcp-server --config ./config.yaml   # config.yaml is gitignored: cp config.example.yaml config.yaml, which names one caller, alice
 MYSQL_PASSWORD=... ./mysql-mcp-server --stdio --config ./config.yaml   # single-user, client launches it
 ```
 

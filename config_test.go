@@ -443,6 +443,18 @@ database:
 			wantIn: []string{"server.auth_tokens.dev", "whitespace"},
 		},
 		{
+			// strings.Fields splits the header on Unicode whitespace, so a
+			// non-breaking space pasted into a token would 401 forever.
+			name:   "token with a non-breaking space",
+			body:   strings.Replace(validConfig, "dev: s3cret", `dev: "s3c\u00a0ret"`, 1),
+			wantIn: []string{"server.auth_tokens.dev", "whitespace"},
+		},
+		{
+			name:   "retired auth_token key names the replacement",
+			body:   strings.Replace(validConfig, "auth_tokens:\n    dev: s3cret", "auth_token: s3cret", 1),
+			wantIn: []string{"server.auth_token was replaced by server.auth_tokens"},
+		},
+		{
 			name:   "caller name with a space",
 			body:   strings.Replace(validConfig, "dev: s3cret", `"a b": s3cret`, 1),
 			wantIn: []string{"server.auth_tokens", `"a b"`},
