@@ -11,12 +11,19 @@ import (
 	"time"
 )
 
+// testCaller and testToken are the one entry every test config's
+// server.auth_tokens carries.
+const (
+	testCaller = "tester"
+	testToken  = "test-token"
+)
+
 // unitConfig is a Config for tests that never reach a database: the pool it
 // builds has nothing to dial and nothing to close.
 func unitConfig() *Config {
 	cfg := &Config{}
 	cfg.Mode = modeReadOnly
-	cfg.Server.AuthToken = "test-token"
+	cfg.Server.AuthTokens = map[string]string{testCaller: testToken}
 	cfg.Limits.TimeoutSeconds = 10
 	cfg.Limits.MaxResponseBytes = 8 << 20
 	cfg.Limits.MaxConnections = 4

@@ -133,13 +133,13 @@ func TestToolAnnotationsPerMode(t *testing.T) {
 func listToolsOverHTTP(t *testing.T, cfg *Config) []map[string]any {
 	t.Helper()
 	server := newMCPServer(cfg, NewPool(cfg), slog.New(slog.DiscardHandler))
-	handler := routes(cfg.Server.AuthToken, newHealth(func(context.Context) error { return nil }),
+	handler := routes(cfg.Server.AuthTokens, newHealth(func(context.Context) error { return nil }),
 		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 			&mcp.StreamableHTTPOptions{Stateless: true}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
-	req.Header.Set("Authorization", "Bearer "+cfg.Server.AuthToken)
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	rec := httptest.NewRecorder()

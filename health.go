@@ -70,8 +70,9 @@ func (h *health) ready(ctx context.Context) error {
 }
 
 // routes assembles the server's handler: two unauthenticated probes, and the
-// bearer-guarded MCP handler on every other path.
-func routes(token string, h *health, mcpHandler http.Handler) http.Handler {
+// bearer-guarded MCP handler on every other path. tokens is the caller set
+// from server.auth_tokens.
+func routes(tokens map[string]string, h *health, mcpHandler http.Handler) http.Handler {
 	// The probes are registered without a method: with a "/" catch-all in the
 	// mux, a "GET /healthz" pattern would send a POST to the bearer check and
 	// answer 401 instead of 405. probe checks the method itself.
@@ -89,7 +90,7 @@ func routes(token string, h *health, mcpHandler http.Handler) http.Handler {
 		}
 		writeStatus(w, http.StatusOK, "ok")
 	}))
-	mux.Handle("/", bearerAuth(token, mcpHandler))
+	mux.Handle("/", bearerAuth(tokens, mcpHandler))
 	return mux
 }
 

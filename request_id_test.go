@@ -16,7 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestValidRequestID(t *testing.T) {
+func TestValidLogID(t *testing.T) {
 	for _, tc := range []struct {
 		id   string
 		want bool
@@ -34,8 +34,8 @@ func TestValidRequestID(t *testing.T) {
 		{"<x>", false},
 		{"a/b", false},
 	} {
-		if got := validRequestID(tc.id); got != tc.want {
-			t.Errorf("validRequestID(%q) = %v, want %v", tc.id, got, tc.want)
+		if got := validLogID(tc.id); got != tc.want {
+			t.Errorf("validLogID(%q) = %v, want %v", tc.id, got, tc.want)
 		}
 	}
 }
@@ -134,9 +134,15 @@ func checkRequestID(t *testing.T, rec map[string]any, line, want string) {
 // and returns the "query" line the server logged, decoded and raw.
 func queryLogLine(t *testing.T, cfg *Config, pool *Pool, header string) (map[string]any, string) {
 	t.Helper()
+	return queryLogLineAs(t, cfg, pool, testToken, header)
+}
+
+// queryLogLineAs is queryLogLine presenting token as the bearer token.
+func queryLogLineAs(t *testing.T, cfg *Config, pool *Pool, token, header string) (map[string]any, string) {
+	t.Helper()
 	var logs bytes.Buffer
 	server := newMCPServer(cfg, pool, slog.New(slog.NewJSONHandler(&logs, nil)))
-	srv := httptest.NewServer(routes(cfg.Server.AuthToken, newHealth(pool.ping),
+	srv := httptest.NewServer(routes(cfg.Server.AuthTokens, newHealth(pool.ping),
 		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 			&mcp.StreamableHTTPOptions{Stateless: true})))
 	defer srv.Close()
@@ -146,7 +152,7 @@ func queryLogLine(t *testing.T, cfg *Config, pool *Pool, header string) (map[str
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             srv.URL,
-		HTTPClient:           &http.Client{Transport: headerTransport{token: cfg.Server.AuthToken, requestID: header}},
+		HTTPClient:           &http.Client{Transport: headerTransport{token: token, requestID: header}},
 		DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {
@@ -184,4 +190,65 @@ func (h headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		r.Header.Set("X-Request-Id", h.requestID)
 	}
 	return http.DefaultTransport.RoundTrip(r)
+}
+
+// The query line names the caller whose token the request carried, and the
+// caller is the first attribute: it is the field the log is read by.
+func TestQueryLogCaller(t *testing.T) {
+	cfg := unreachableConfig(t)
+	cfg.Server.AuthTokens = twoCallers
+	for name, token := range twoCallers {
+		t.Run(name, func(t *testing.T) {
+			rec, line := queryLogLineAs(t, cfg, NewPool(cfg), token, "req-7")
+			if got := rec["caller"]; got != name {
+				t.Errorf("caller = %v, want %q in %s", got, name, line)
+			}
+			checkRequestID(t, rec, line, "req-7")
+			if i, j := strings.Index(line, `"caller":`), strings.Index(line, `"request_id":`); i < 0 || j < 0 || i > j {
+				t.Errorf("caller does not precede request_id in %s", line)
+			}
+		})
+	}
+}
+
+// Under stdio nothing checked a token, so the line names no caller rather
+// than inventing one.
+func TestQueryLogNoCallerUnderStdio(t *testing.T) {
+	cfg := unreachableConfig(t)
+	cfg.transport = transportStdio
+	rec, _ := queryLogRecord(t, cfg, NewPool(cfg), "SELECT 1")
+	if v, present := rec["caller"]; present {
+		t.Errorf("caller = %v on a stdio query line, want no such attribute", v)
+	}
+}
+
+// A token outside the set never reaches the MCP handler: the client's
+// connect fails on the 401 and no query line is written.
+func TestUnknownTokenIsRefused(t *testing.T) {
+	cfg := unreachableConfig(t)
+	cfg.Server.AuthTokens = twoCallers
+	pool := NewPool(cfg)
+	var logs bytes.Buffer
+	server := newMCPServer(cfg, pool, slog.New(slog.NewJSONHandler(&logs, nil)))
+	srv := httptest.NewServer(routes(cfg.Server.AuthTokens, newHealth(pool.ping),
+		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
+			&mcp.StreamableHTTPOptions{Stateless: true})))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"sql":"SELECT 1"}}}`))
+	req.Header.Set("Authorization", "Bearer not-anyones-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+	if strings.Contains(logs.String(), `"msg":"query"`) {
+		t.Errorf("a query line was logged for a refused token:\n%s", logs.String())
+	}
 }

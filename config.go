@@ -35,8 +35,11 @@ type Config struct {
 	// the MySQL user's grants become the only boundary.
 	Mode   string `yaml:"mode"`
 	Server struct {
-		Listen    string `yaml:"listen"`
-		AuthToken string `yaml:"auth_token"`
+		Listen string `yaml:"listen"`
+		// AuthTokens is one bearer token per caller, keyed by the name the
+		// query log records for it. A team that wants one shared token
+		// defines one name.
+		AuthTokens map[string]string `yaml:"auth_tokens"`
 	} `yaml:"server"`
 	Database struct {
 		Host     string `yaml:"host"`
@@ -220,16 +223,24 @@ func LoadConfig(path, transport string) (*Config, error) {
 		expand = append(expand, &t.CA, &t.ServerName, &t.Cert, &t.Key)
 	}
 	if !cfg.stdio() {
-		expand = append(expand, &cfg.Server.Listen, &cfg.Server.AuthToken)
+		expand = append(expand, &cfg.Server.Listen)
 	}
-	for _, f := range expand {
-		*f = os.Expand(*f, func(key string) string {
+	expandOne := func(s string) string {
+		return os.Expand(s, func(key string) string {
 			val, ok := os.LookupEnv(key)
 			if !ok {
 				missing = append(missing, key)
 			}
 			return val
 		})
+	}
+	for _, f := range expand {
+		*f = expandOne(*f)
+	}
+	if !cfg.stdio() {
+		for name, token := range cfg.Server.AuthTokens {
+			cfg.Server.AuthTokens[name] = expandOne(token)
+		}
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("config references unset environment variables: %v", missing)
@@ -240,8 +251,10 @@ func LoadConfig(path, transport string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("mode must be %q or %q, got %q", modeReadOnly, modeFullAccess, cfg.Mode)
 	}
-	if !cfg.stdio() && cfg.Server.AuthToken == "" {
-		return nil, fmt.Errorf("server.auth_token must not be empty")
+	if !cfg.stdio() {
+		if err := validateAuthTokens(cfg.Server.AuthTokens); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.Database.Host == "" || cfg.Database.Username == "" || cfg.Database.DBName == "" {
 		return nil, fmt.Errorf("database.host, database.username and database.dbname are required")
@@ -281,6 +294,38 @@ func LoadConfig(path, transport string) (*Config, error) {
 		cfg.masker.bestEffort = true
 	}
 	return cfg, nil
+}
+
+// validateAuthTokens checks the caller set an HTTP server authenticates
+// against. Every rule exists so a log line can be trusted: a name lands in
+// the caller field of every query line, so it is held to the request id's
+// charset; a token shared by two names would make that field a guess, so
+// tokens are unique; and an empty set would mean a server nobody can reach,
+// which is a config mistake rather than a choice.
+func validateAuthTokens(tokens map[string]string) error {
+	if len(tokens) == 0 {
+		return fmt.Errorf("server.auth_tokens must name at least one caller (name: token)")
+	}
+	owner := make(map[string]string, len(tokens))
+	for name, token := range tokens {
+		if !validLogID(name) {
+			return fmt.Errorf("server.auth_tokens: caller name %q must be 1 to 64 characters of letters, digits, '.', '_' or '-'", name)
+		}
+		if token == "" {
+			return fmt.Errorf("server.auth_tokens.%s must not be empty", name)
+		}
+		if strings.ContainsAny(token, " \t\r\n") {
+			// The Authorization header is split on whitespace, so such a
+			// token could never be presented.
+			return fmt.Errorf("server.auth_tokens.%s must not contain whitespace", name)
+		}
+		if other, dup := owner[token]; dup {
+			a, b := min(name, other), max(name, other)
+			return fmt.Errorf("server.auth_tokens: %s and %s share one token, so the log could not tell them apart", a, b)
+		}
+		owner[token] = name
+	}
+	return nil
 }
 
 func (c *Config) fullAccess() bool { return c.Mode == modeFullAccess }

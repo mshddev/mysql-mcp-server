@@ -41,7 +41,7 @@ func get(t *testing.T, handler http.Handler, method, path string) *httptest.Resp
 func TestRoutesProbesNeedNoToken(t *testing.T) {
 	mcpCalled := false
 	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { mcpCalled = true })
-	handler := routes("secret", newTestHealth(&countingPing{}, &fakeClock{time.Now()}), mcpHandler)
+	handler := routes(map[string]string{"probe": "secret"}, newTestHealth(&countingPing{}, &fakeClock{time.Now()}), mcpHandler)
 
 	for _, path := range []string{"/healthz", "/readyz"} {
 		rec := get(t, handler, http.MethodGet, path)
@@ -64,7 +64,7 @@ func TestRoutesProbesNeedNoToken(t *testing.T) {
 }
 
 func TestRoutesProbesAreGetOnly(t *testing.T) {
-	handler := routes("secret", newTestHealth(&countingPing{}, &fakeClock{time.Now()}), http.NotFoundHandler())
+	handler := routes(map[string]string{"probe": "secret"}, newTestHealth(&countingPing{}, &fakeClock{time.Now()}), http.NotFoundHandler())
 	for _, path := range []string{"/healthz", "/readyz"} {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 			if rec := get(t, handler, method, path); rec.Code != http.StatusMethodNotAllowed {
@@ -81,7 +81,7 @@ func TestRoutesProbesAreGetOnly(t *testing.T) {
 func TestRoutesEverythingElseIsGuarded(t *testing.T) {
 	mcpCalled := false
 	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { mcpCalled = true })
-	handler := routes("secret", newTestHealth(&countingPing{}, &fakeClock{time.Now()}), mcpHandler)
+	handler := routes(map[string]string{"probe": "secret"}, newTestHealth(&countingPing{}, &fakeClock{time.Now()}), mcpHandler)
 
 	for _, path := range []string{"/", "/mcp", "/health", "/healthz/", "/readyz/x"} {
 		rec := get(t, handler, http.MethodPost, path)
@@ -103,7 +103,7 @@ func TestRoutesEverythingElseIsGuarded(t *testing.T) {
 
 func TestReadyzReportsDegraded(t *testing.T) {
 	p := &countingPing{err: errors.New("dial tcp: connection refused")}
-	handler := routes("secret", newTestHealth(p, &fakeClock{time.Now()}), http.NotFoundHandler())
+	handler := routes(map[string]string{"probe": "secret"}, newTestHealth(p, &fakeClock{time.Now()}), http.NotFoundHandler())
 
 	rec := get(t, handler, http.MethodGet, "/readyz")
 	if rec.Code != http.StatusServiceUnavailable {

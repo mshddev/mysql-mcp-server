@@ -41,8 +41,8 @@ A few things to get right:
   `127.0.0.1:3000` by default on purpose: the expected shape is a reverse proxy
   on the same host doing TLS, with only the proxy's port open to the network
   (the README's Deploy section walks through it). Widen `listen` only on a
-  private network you trust, knowing the token then crosses it in the clear.
-  The only paths that answer without the token are the health probes,
+  private network you trust, knowing the tokens then cross it in the clear.
+  The only paths that answer without a token are the health probes,
   `/healthz` and `/readyz`, and they say up or down and nothing else; the
   readiness one caches its database ping for five seconds so an anonymous
   caller can't turn it into load.
@@ -52,12 +52,14 @@ A few things to get right:
   database, or a `--stdio` server on a laptop reaching one elsewhere — turn
   `database.tls` on; it verifies the certificate by default and warns at
   startup if you opt out of that (README, Encrypting the database hop).
-- **Use a strong, unique bearer token,** and rotate it if it leaks. It's the
-  only thing between a caller and the data. There is one token per deployment
-  today, shared by everyone who connects, so the query log records what ran but
-  not who ran it; per-caller tokens are planned.
+- **Issue one strong bearer token per person or agent,** and revoke or
+  rotate that one entry if it leaks. A token is the only thing between a
+  caller and the data, and its `server.auth_tokens` name is what the query
+  log records as `caller`: share one between people and the log can no
+  longer say who ran what. The server refuses a config where two names carry
+  the same token.
 - **Keep secrets in the environment,** not in `config.yaml`. The `${VAR}`
-  placeholders exist for this — the token and password should never sit in a
+  placeholders exist for this — the tokens and password should never sit in a
   file in git.
 - **Remember the response cap bounds the JSON, not the database read.** A query
   can still pull a large payload from MySQL before truncation; the timeout is the
