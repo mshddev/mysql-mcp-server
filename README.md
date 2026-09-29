@@ -122,6 +122,18 @@ client will too — wire one up under
 - **Read-only, enforced by the database** — connect with a `SELECT`-only user;
   every pooled connection also runs `SET SESSION TRANSACTION READ ONLY`. The SQL
   text is never inspected — grants are the fence.
+- **Credentials never come back, always on.** MariaDB's `SHOW GRANTS` and
+  `SHOW CREATE USER` print the connected user's password hash, and MySQL 8's
+  `SHOW CREATE USER` prints its own. The server replaces the secret in every
+  such clause (`IDENTIFIED BY PASSWORD '…'`, `IDENTIFIED WITH … AS '…'`,
+  `IDENTIFIED VIA … USING '…'`) with `"<masked>"` and leaves the rest of the
+  line alone, so `SHOW GRANTS` still says what the user may do, and
+  `masked_values` lists the column under `credential`. The log gets the same
+  scrub. A `CREATE USER`, `ALTER USER` or `SET PASSWORD` reaches it with the
+  password masked, and so does a database error that quotes one back. This is
+  not part of `masking` and no setting turns it off. It reads text, though, so
+  a hash selected straight from `mysql.user` is an ordinary column and needs a
+  mask rule; the starter list has `authentication_string` for that.
 - **PII masking (optional)** — values of configured columns come back as
   `"<masked>"`. This is hygiene for cooperative callers — keeping personal data
   out of agent transcripts — **not** an airtight boundary. When it is on, it is
@@ -637,9 +649,9 @@ only proof that the guards you think are on actually are.
 
 **Where things are recorded.** Three logs, each holding a different part of
 the story. The server log (journald, with the default `logging.output`) has
-every statement with its duration and error, verbatim by default and with
-email and phone shapes scrubbed when `masking.values` is on, and never the
-rows. The proxy's access log has the caller's address, status, and timing, but
+every statement with its duration and error, and never the rows. It always
+masks the password in a credential clause, and masks email and phone shapes
+too when `masking.values` is on. The proxy's access log has the caller's address, status, and timing, but
 not the SQL, which travels in the request body. With the proxy stamping ids as
 in step 3, the server line's `request_id` is the id in the proxy's access log,
 so one call can be followed across both. The database's own general log or
@@ -794,6 +806,9 @@ A few rules worth knowing:
   an email address or a phone number becomes `"<masked>"` in place;
   `masked_values` maps each affected column to the detectors that fired, and
   the `note` says so.
+- The secret in a credential clause, such as the hash MariaDB's `SHOW GRANTS`
+  prints, always becomes `"<masked>"` in place, with masking on or off.
+  `masked_values` lists `credential` for that column, and the `note` says so.
 - A cell holding a JSON document keeps its shape, but a key named like a
   masked column has its value replaced by `"<masked>"`; `masked_json_keys`
   maps each affected column to those key names, and the `note` says so. A

@@ -286,7 +286,9 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 			"state (SET ...) does not persist between calls. "
 	}
 	description += "Use SHOW TABLES / DESCRIBE <table> to discover the schema. " +
-		"Results are capped; narrow queries with WHERE/LIMIT."
+		"Results are capped; narrow queries with WHERE/LIMIT." +
+		" The password or hash in a credential clause (IDENTIFIED BY ..., as MariaDB's SHOW GRANTS prints) always" +
+		" comes back as \"<masked>\" (listed per result in masked_values as credential)."
 	if cfg.masker != nil {
 		description += " Some columns come back as \"<masked>\" under this server's PII policy " +
 			"(listed per result in masked_columns); that is intended, do not try to recover the values." +
@@ -306,12 +308,13 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		}
 	}
 	// logText is what the query log gets instead of the raw SQL or error
-	// text: with masking.values on, the same shape detectors that scrub a
-	// result cell run over it, so an email or phone number in a WHERE
-	// literal, a write's VALUES, or a database error that echoes the
-	// statement lands in the log as <masked>. It touches only the copy that
-	// is logged; the statement the database runs and the error the client
-	// gets are the originals. With value scanning off it returns its input.
+	// text, once run has scrubbed credentials out of it: with masking.values
+	// on, the same shape detectors that scrub a result cell run over it, so
+	// an email or phone number in a WHERE literal, a write's VALUES, or a
+	// database error that echoes the statement lands in the log as <masked>.
+	// It touches only the copy that is logged; the statement the database
+	// runs and the error the client gets are the originals. With value
+	// scanning off it returns its input.
 	logText := func(s string) string {
 		if !cfg.masker.scansValues() {
 			return s
@@ -335,6 +338,10 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 
 		start := time.Now()
 		res, err := pool.Query(queryCtx, sql)
+		// Always, whatever the masking section says: a CREATE USER, ALTER
+		// USER or SET PASSWORD must not put its password in the log, nor may
+		// an error that quotes it back (credscrub.go).
+		loggedSQL, secrets := scrubStatement(sql)
 		// The caller leads: it is the field the log is read by.
 		var attrs []any
 		if caller != "" {
@@ -342,12 +349,12 @@ func newMCPServer(cfg *Config, pool *Pool, logger *slog.Logger) *mcp.Server {
 		}
 		attrs = append(attrs,
 			"request_id", id,
-			"query", logText(sql),
+			"query", logText(loggedSQL),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"truncated", res != nil && res.Truncated,
 		)
 		if err != nil {
-			logger.Error("query", append(attrs, "error", logText(err.Error()))...)
+			logger.Error("query", append(attrs, "error", logText(scrubEcho(err.Error(), secrets)))...)
 			return nil, nil, err
 		}
 		logger.Info("query", attrs...)

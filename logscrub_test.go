@@ -239,3 +239,78 @@ func TestQueryLogScrubAgainstDatabase(t *testing.T) {
 		}
 	})
 }
+
+// Credentials are scrubbed from the log whatever the masking section says,
+// off included: a CREATE USER or SET PASSWORD lands in the log with its
+// password as <masked>, and so does an error that quotes it back.
+func TestQueryLogScrubsCredentials(t *testing.T) {
+	const secret = "s3cret"
+
+	for _, tc := range []struct {
+		name   string
+		masker func(t *testing.T) *Masker
+	}{
+		{"masking off", func(*testing.T) *Masker { return nil }},
+		{"masking.values on", func(t *testing.T) *Masker { return valuesMasker(t, []string{"email", "phone_id"}) }},
+	} {
+		for _, st := range []struct {
+			name, sql, want string
+		}{
+			{"create user", "CREATE USER 'bob'@'%' IDENTIFIED BY '" + secret + "'", "CREATE USER 'bob'@'%' IDENTIFIED BY " + maskedValue},
+			{"set password", "SET PASSWORD FOR 'bob'@'%' = PASSWORD('" + secret + "')", "SET PASSWORD FOR 'bob'@'%' = PASSWORD(" + maskedValue + ")"},
+		} {
+			t.Run(tc.name+", "+st.name, func(t *testing.T) {
+				cfg := unreachableConfig(t)
+				cfg.masker = tc.masker(t)
+				rec, res := queryLogRecord(t, cfg, NewPool(cfg), st.sql)
+				if got := attr(t, rec, "query"); got != st.want {
+					t.Errorf("logged query = %q, want %q", got, st.want)
+				}
+				if got := attr(t, rec, "error"); strings.Contains(got, secret) {
+					t.Errorf("logged error = %q, want no password in it", got)
+				}
+				// Only the log's copy: the caller's own error is untouched.
+				if !res.IsError {
+					t.Fatalf("want the call to fail at the dial, got %+v", res)
+				}
+			})
+		}
+	}
+
+	// The masking parser quotes from the fault onward, which here starts
+	// after IDENTIFIED: the logged error has no keyword left to recognise
+	// the password by, and must still not carry it.
+	t.Run("refusal quoting past the keyword", func(t *testing.T) {
+		cfg := unreachableConfig(t)
+		m, err := NewMasker(&MaskingConfig{Mask: []string{"email"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.masker = m
+		sql := "CREATE USER bob IDENTIFIED VIA ed25519 USING PASSWORD('" + secret + "')"
+		rec, res := queryLogRecord(t, cfg, NewPool(cfg), sql)
+		if !res.IsError {
+			t.Fatalf("want the call refused, got %+v", res)
+		}
+		got := attr(t, rec, "error")
+		if !strings.Contains(got, "could not parse") || !strings.Contains(got, "VIA ed25519 USING PASSWORD(") {
+			t.Fatalf("logged error = %q, want the parser's refusal quoting the statement", got)
+		}
+		if strings.Contains(got, secret) || !strings.Contains(got, maskedValue) {
+			t.Errorf("logged error = %q, want the password replaced by %s", got, maskedValue)
+		}
+		if q := attr(t, rec, "query"); strings.Contains(q, secret) {
+			t.Errorf("logged query = %q, want the password scrubbed", q)
+		}
+	})
+
+	// A statement with nothing to scrub is logged verbatim, masking off.
+	t.Run("no clause, verbatim", func(t *testing.T) {
+		cfg := unreachableConfig(t)
+		sql := "SELECT user, host FROM mysql.user WHERE user = 'identified'"
+		rec, _ := queryLogRecord(t, cfg, NewPool(cfg), sql)
+		if got := attr(t, rec, "query"); got != sql {
+			t.Errorf("logged query = %q, want %q", got, sql)
+		}
+	})
+}
