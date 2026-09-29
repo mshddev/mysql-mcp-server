@@ -150,6 +150,19 @@ func TestValueMaskNote(t *testing.T) {
 	if got != want {
 		t.Errorf("note = %q, want %q", got, want)
 	}
+
+	// A credential is not a PII pattern and gets a sentence of its own.
+	got = valueMaskNote(map[string][]string{"Grants for u@%": {credentialDetector}})
+	want = `credentials inside Grants for u@% are "<masked>" by server policy, whatever the masking config`
+	if got != want {
+		t.Errorf("note = %q, want %q", got, want)
+	}
+	got = valueMaskNote(map[string][]string{"notes": {credentialDetector, "email"}, "sql": {credentialDetector}})
+	want = `text matching email patterns is "<masked>" inside notes by server PII policy; ` +
+		`credentials inside notes, sql are "<masked>" by server policy, whatever the masking config`
+	if got != want {
+		t.Errorf("note = %q, want %q", got, want)
+	}
 }
 
 func TestMaskerExcepted(t *testing.T) {

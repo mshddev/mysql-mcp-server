@@ -43,8 +43,10 @@ type QueryResult struct {
 	// replaced, so a caller can tell "<masked>" apart from real data.
 	MaskedColumns []string `json:"masked_columns,omitempty"`
 	// MaskedValues maps a result column to the value detectors (email,
-	// phone_id) that masked a span inside at least one of its cells. Distinct
-	// from MaskedColumns: those cells are otherwise real data.
+	// phone_id) that masked a span inside at least one of its cells, and to
+	// "credential" where the always-on scrub hid a secret in an auth clause
+	// (credscrub.go). Distinct from MaskedColumns: those cells are otherwise
+	// real data.
 	MaskedValues map[string][]string `json:"masked_values,omitempty"`
 	// MaskedJSONKeys maps a result column to the keys the column rules
 	// masked inside its JSON-valued cells (jsonmask.go). Like MaskedValues,
@@ -326,6 +328,18 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 				} else {
 					f := fieldAt(fields, i)
 					v, size = fieldValueToJSON(&row[i], f)
+					text := row[i].Type == mysql.FieldValueTypeString && !isBinaryField(f)
+					// Before any masking layer, and whatever the masking
+					// section says, masking.except included: the secret in
+					// an auth clause (the password hash MariaDB's SHOW
+					// GRANTS prints) never leaves the server
+					// (credscrub.go). The layers below see the scrubbed text.
+					if s, ok := v.(string); ok && text {
+						if out, secrets := scrubCredentials(s); secrets != nil {
+							v, size = out, len(out)+2
+							hits.add(i, []string{credentialDetector})
+						}
+					}
 					// Second layer: a cell the column rules passed is checked
 					// by shape. Only text cells qualify — binary payloads are
 					// already a placeholder, and INT/FLOAT can't hold an email
@@ -335,8 +349,7 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 					// reach its keys and the detectors its leaves; one that is
 					// not, or that nothing inside matched, is plain text to
 					// the raw scan.
-					if (p.masker.scansValues() || p.masker.scansJSON()) && row[i].Type == mysql.FieldValueTypeString &&
-						!isBinaryField(f) && !(i < len(exempt) && exempt[i]) {
+					if (p.masker.scansValues() || p.masker.scansJSON()) && text && !(i < len(exempt) && exempt[i]) {
 						if s, ok := v.(string); ok {
 							if out, keys, fired, changed := p.masker.maskJSON(s); changed {
 								v, size = out, len(out)+2
@@ -438,24 +451,42 @@ func (p *Pool) Query(ctx context.Context, sql string) (*QueryResult, error) {
 }
 
 // valueMaskNote words the masked_values map for the note, in a stable order
-// so identical results read identically.
+// so identical results read identically. A scrubbed credential gets its own
+// sentence: it is no PII policy's doing, and no config can lift it.
 func valueMaskNote(mv map[string][]string) string {
-	cols := make([]string, 0, len(mv))
+	var cols, credCols []string
 	kinds := map[string]bool{}
 	for col, names := range mv {
-		cols = append(cols, col)
+		pii := false
 		for _, n := range names {
+			if n == credentialDetector {
+				credCols = append(credCols, col)
+				continue
+			}
 			kinds[n] = true
+			pii = true
+		}
+		if pii {
+			cols = append(cols, col)
 		}
 	}
-	sort.Strings(cols)
-	kindList := make([]string, 0, len(kinds))
-	for k := range kinds {
-		kindList = append(kindList, k)
+	var notes []string
+	if len(cols) > 0 {
+		sort.Strings(cols)
+		kindList := make([]string, 0, len(kinds))
+		for k := range kinds {
+			kindList = append(kindList, k)
+		}
+		sort.Strings(kindList)
+		notes = append(notes, fmt.Sprintf("text matching %s patterns is %q inside %s by server PII policy",
+			strings.Join(kindList, ", "), maskedValue, strings.Join(cols, ", ")))
 	}
-	sort.Strings(kindList)
-	return fmt.Sprintf("text matching %s patterns is %q inside %s by server PII policy",
-		strings.Join(kindList, ", "), maskedValue, strings.Join(cols, ", "))
+	if len(credCols) > 0 {
+		sort.Strings(credCols)
+		notes = append(notes, fmt.Sprintf("credentials inside %s are %q by server policy, whatever the masking config",
+			strings.Join(credCols, ", "), maskedValue))
+	}
+	return strings.Join(notes, "; ")
 }
 
 func fieldAt(fields []*mysql.Field, i int) *mysql.Field {

@@ -154,5 +154,9 @@ masking:
     - password
     - "*_token"
     - "*account_number*"
+    # mysql.user's password hash, for a database user that can read that
+    # table. SHOW GRANTS needs no rule, since the server always scrubs the
+    # hash it prints.
+    - authentication_string
   except: []
   values: [email, phone_id]
