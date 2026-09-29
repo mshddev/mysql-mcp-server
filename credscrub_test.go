@@ -19,8 +19,8 @@ func TestScrubCredentials(t *testing.T) {
 		// --- IDENTIFIED BY PASSWORD: MariaDB's SHOW GRANTS and SHOW CREATE USER ---
 		{
 			name:        "MariaDB SHOW GRANTS hash",
-			in:          "GRANT USAGE ON *.* TO `mcp_agent`@`143.198.222.138` IDENTIFIED BY PASSWORD '" + hash + "'",
-			want:        "GRANT USAGE ON *.* TO `mcp_agent`@`143.198.222.138` IDENTIFIED BY PASSWORD " + M,
+			in:          "GRANT USAGE ON *.* TO `mcp_agent`@`203.0.113.10` IDENTIFIED BY PASSWORD '" + hash + "'",
+			want:        "GRANT USAGE ON *.* TO `mcp_agent`@`203.0.113.10` IDENTIFIED BY PASSWORD " + M,
 			wantSecrets: []string{"'" + hash + "'"},
 		},
 		{
